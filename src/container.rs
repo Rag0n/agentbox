@@ -84,16 +84,40 @@ pub fn status(name: &str) -> Result<ContainerStatus> {
     let json: serde_json::Value = serde_json::from_slice(&output.stdout)
         .context("failed to parse container inspect output")?;
 
-    let running = json
-        .pointer("/State/Running")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    Ok(parse_status(&json))
+}
 
-    if running {
-        Ok(ContainerStatus::Running)
-    } else {
-        Ok(ContainerStatus::Stopped)
+/// Parse container status from inspect JSON.
+fn parse_status(json: &serde_json::Value) -> ContainerStatus {
+    let status_str = json
+        .pointer("/status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    match status_str {
+        "running" => ContainerStatus::Running,
+        "stopped" => ContainerStatus::Stopped,
+        _ => ContainerStatus::NotFound,
     }
+}
+
+/// Parse container list JSON, returning (name, state) pairs for agentbox containers.
+fn parse_container_list(json_str: &str) -> Vec<(String, String)> {
+    let containers: Vec<serde_json::Value> = serde_json::from_str(json_str)
+        .unwrap_or_default();
+    let mut result = Vec::new();
+    for json in &containers {
+        let name = json.pointer("/configuration/id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if name.starts_with("agentbox-") {
+            let state = json.pointer("/status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            result.push((name.to_string(), state.to_string()));
+        }
+    }
+    result
 }
 
 /// Run a container with the given options.
@@ -206,23 +230,13 @@ pub fn list(verbose: bool) -> Result<()> {
         .context("failed to run 'container ls'")?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut found = false;
-    for line in stdout.lines() {
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
-            let name = json.pointer("/Names")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if name.starts_with("agentbox-") {
-                let state = json.pointer("/State")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                println!("{}\t{}", name, state);
-                found = true;
-            }
-        }
-    }
-    if !found {
+    let containers = parse_container_list(&stdout);
+    if containers.is_empty() {
         println!("No agentbox containers found.");
+    } else {
+        for (name, state) in &containers {
+            println!("{}\t{}", name, state);
+        }
     }
     Ok(())
 }
@@ -278,6 +292,56 @@ mod tests {
         assert!(args.contains(&"8G".to_string()));
         assert!(args.contains(&"--interactive".to_string()));
         assert!(args.contains(&"--tty".to_string()));
+    }
+
+    #[test]
+    fn test_parse_status_running() {
+        let json: serde_json::Value = serde_json::json!({"status": "running"});
+        assert_eq!(parse_status(&json), ContainerStatus::Running);
+    }
+
+    #[test]
+    fn test_parse_status_stopped() {
+        let json: serde_json::Value = serde_json::json!({"status": "stopped"});
+        assert_eq!(parse_status(&json), ContainerStatus::Stopped);
+    }
+
+    #[test]
+    fn test_parse_status_missing() {
+        let json: serde_json::Value = serde_json::json!({});
+        assert_eq!(parse_status(&json), ContainerStatus::NotFound);
+    }
+
+    #[test]
+    fn test_parse_container_list_filters_agentbox() {
+        let json = serde_json::json!([
+            {
+                "status": "stopped",
+                "configuration": {"id": "agentbox-myapp-abc123"}
+            },
+            {
+                "status": "running",
+                "configuration": {"id": "buildkit"}
+            },
+            {
+                "status": "running",
+                "configuration": {"id": "agentbox-other-def456"}
+            }
+        ]);
+        let result = parse_container_list(&json.to_string());
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], ("agentbox-myapp-abc123".into(), "stopped".into()));
+        assert_eq!(result[1], ("agentbox-other-def456".into(), "running".into()));
+    }
+
+    #[test]
+    fn test_parse_container_list_empty() {
+        assert!(parse_container_list("[]").is_empty());
+    }
+
+    #[test]
+    fn test_parse_container_list_invalid_json() {
+        assert!(parse_container_list("not json").is_empty());
     }
 
     #[test]
