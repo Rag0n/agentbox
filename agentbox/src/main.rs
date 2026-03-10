@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 mod config;
@@ -52,6 +52,58 @@ enum ConfigCommands {
     Init,
 }
 
+fn create_and_run(
+    name: &str,
+    image_tag: &str,
+    workdir: &str,
+    config: &config::Config,
+    task: Option<&str>,
+    verbose: bool,
+) -> Result<()> {
+    let home = dirs::home_dir().context("cannot determine home directory")?;
+
+    let mut env_vars: Vec<(String, String)> = Vec::new();
+
+    // Config env vars (empty value = inherit from host)
+    for (key, val) in &config.env {
+        let value = if val.is_empty() {
+            std::env::var(key).unwrap_or_default()
+        } else {
+            val.clone()
+        };
+        if !value.is_empty() {
+            env_vars.push((key.clone(), value));
+        }
+    }
+
+    // Git identity
+    env_vars.extend(git::git_env_vars());
+
+    // Ensure ~/.claude.json exists
+    let claude_json = home.join(".claude.json");
+    if !claude_json.exists() {
+        std::fs::write(&claude_json, "{}")?;
+    }
+
+    let opts = container::RunOpts {
+        name: name.into(),
+        image: image_tag.into(),
+        workdir: workdir.into(),
+        cpus: config.effective_cpus(),
+        memory: config.memory.clone(),
+        env_vars,
+        volumes: vec![
+            format!("{}:{}", workdir, workdir),
+            format!("{}:/home/user/.claude", home.join(".claude").display()),
+            format!("{}:/home/user/.claude.json", claude_json.display()),
+        ],
+        interactive: task.is_none(),
+        task: task.map(String::from),
+    };
+
+    container::run(&opts, verbose)
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -77,11 +129,48 @@ fn main() -> Result<()> {
             }
         },
         None => {
-            if cli.task.is_empty() {
-                todo!("interactive mode")
+            let config = config::Config::load()?;
+            let cwd = std::env::current_dir()?;
+            let cwd_str = cwd.to_string_lossy().to_string();
+            let name = container::container_name(&cwd_str);
+            let task_str = if cli.task.is_empty() {
+                None
             } else {
-                todo!("headless mode: {}", cli.task.join(" "))
+                Some(cli.task.join(" "))
+            };
+
+            match container::status(&name)? {
+                container::ContainerStatus::Running => {
+                    container::exec(&name, task_str.as_deref(), cli.verbose)?;
+                }
+                container::ContainerStatus::Stopped => {
+                    let (dockerfile_content, image_tag) =
+                        image::resolve_dockerfile(&cwd, cli.profile.as_deref(), &config)?;
+                    let cache_key = image_tag.replace(':', "-");
+                    if image::needs_build(&dockerfile_content, &cache_key, &image::cache_dir()) {
+                        eprintln!("Image changed, recreating container...");
+                        container::rm(&name, cli.verbose)?;
+                        image::build(&image_tag, &dockerfile_content, cli.verbose)?;
+                        image::save_cache(&dockerfile_content, &cache_key, &image::cache_dir())?;
+                        create_and_run(&name, &image_tag, &cwd_str, &config, task_str.as_deref(), cli.verbose)?;
+                    } else {
+                        container::start(&name, cli.verbose)?;
+                        container::exec(&name, task_str.as_deref(), cli.verbose)?;
+                    }
+                }
+                container::ContainerStatus::NotFound => {
+                    let (dockerfile_content, image_tag) =
+                        image::resolve_dockerfile(&cwd, cli.profile.as_deref(), &config)?;
+                    let cache_key = image_tag.replace(':', "-");
+                    if image::needs_build(&dockerfile_content, &cache_key, &image::cache_dir()) {
+                        eprintln!("Building image...");
+                        image::build(&image_tag, &dockerfile_content, cli.verbose)?;
+                        image::save_cache(&dockerfile_content, &cache_key, &image::cache_dir())?;
+                    }
+                    create_and_run(&name, &image_tag, &cwd_str, &config, task_str.as_deref(), cli.verbose)?;
+                }
             }
+            Ok(())
         }
     }
 }
