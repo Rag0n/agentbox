@@ -104,7 +104,25 @@ fn create_and_run(
     container::run(&opts, verbose)
 }
 
+fn check_prerequisites() -> Result<()> {
+    let output = std::process::Command::new("container")
+        .args(["system", "version"])
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => Ok(()),
+        _ => {
+            eprintln!("Error: Apple Container CLI is not installed or not running.");
+            eprintln!();
+            eprintln!("Install it from: https://github.com/apple/container");
+            eprintln!("Then run: container system start");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() -> Result<()> {
+    check_prerequisites()?;
     let cli = Cli::parse();
 
     match cli.command {
