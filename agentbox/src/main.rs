@@ -112,11 +112,11 @@ fn check_prerequisites() -> Result<()> {
     match output {
         Ok(o) if o.status.success() => Ok(()),
         _ => {
-            eprintln!("Error: Apple Container CLI is not installed or not running.");
-            eprintln!();
-            eprintln!("Install it from: https://github.com/apple/container");
-            eprintln!("Then run: container system start");
-            std::process::exit(1);
+            anyhow::bail!(
+                "Apple Container CLI is not installed or not running.\n\n\
+                 Install it from: https://github.com/apple/container\n\
+                 Then run: container system start"
+            );
         }
     }
 }
@@ -160,9 +160,10 @@ fn main() -> Result<()> {
             ConfigCommands::Init => {
                 let path = config::Config::config_path();
                 if path.exists() {
-                    eprintln!("Config already exists at {}", path.display());
-                    eprintln!("Edit it directly or remove it first.");
-                    std::process::exit(1);
+                    anyhow::bail!(
+                        "Config already exists at {}\nEdit it directly or remove it first.",
+                        path.display()
+                    );
                 }
                 if let Some(parent) = path.parent() {
                     std::fs::create_dir_all(parent)?;

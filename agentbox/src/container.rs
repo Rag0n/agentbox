@@ -7,7 +7,11 @@ pub fn container_name(path: &str) -> String {
     let dir_name = std::path::Path::new(path)
         .file_name()
         .unwrap_or_default()
-        .to_string_lossy();
+        .to_string_lossy()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .collect::<String>();
     let hash = format!("{:x}", Sha256::digest(path.as_bytes()));
     let short_hash = &hash[..6];
     format!("agentbox-{}-{}", dir_name, short_hash)
@@ -202,6 +206,7 @@ pub fn list(verbose: bool) -> Result<()> {
         .context("failed to run 'container ls'")?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut found = false;
     for line in stdout.lines() {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
             let name = json.pointer("/Names")
@@ -212,8 +217,12 @@ pub fn list(verbose: bool) -> Result<()> {
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
                 println!("{}\t{}", name, state);
+                found = true;
             }
         }
+    }
+    if !found {
+        println!("No agentbox containers found.");
     }
     Ok(())
 }

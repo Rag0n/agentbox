@@ -53,7 +53,8 @@ pub fn resolve_dockerfile(
 
 pub fn cache_dir() -> PathBuf {
     dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from("~/.cache"))
+        .or_else(|| dirs::home_dir().map(|h| h.join(".cache")))
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("agentbox")
 }
 
