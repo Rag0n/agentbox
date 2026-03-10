@@ -122,15 +122,32 @@ fn check_prerequisites() -> Result<()> {
         .output();
 
     match output {
-        Ok(o) if o.status.success() => Ok(()),
-        _ => {
+        Ok(o) if o.status.success() => return Ok(()),
+        Ok(_) => {} // command found but system not running – try starting below
+        Err(_) => {
             anyhow::bail!(
-                "Apple Container CLI is not installed or not running.\n\n\
-                 Install it from: https://github.com/apple/container\n\
-                 Then run: container system start"
+                "Apple Container CLI is not installed.\n\n\
+                 Install it from: https://github.com/apple/container"
             );
         }
     }
+
+    eprintln!("[agentbox] container system not running, starting it...");
+    let start = std::process::Command::new("container")
+        .args(["system", "start"])
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .context("failed to run 'container system start'")?;
+
+    if !start.success() {
+        anyhow::bail!(
+            "Failed to start container system.\n\
+             Try running manually: container system start"
+        );
+    }
+    Ok(())
 }
 
 fn main() -> Result<()> {
