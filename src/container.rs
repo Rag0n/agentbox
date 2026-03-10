@@ -219,6 +219,21 @@ pub fn rm(name: &str, verbose: bool) -> Result<()> {
     Ok(())
 }
 
+/// Return names of all agentbox containers.
+pub fn list_names(verbose: bool) -> Result<Vec<String>> {
+    if verbose {
+        eprintln!("[agentbox] container ls --all --format json");
+    }
+    let output = Command::new("container")
+        .args(["ls", "--all", "--format", "json"])
+        .output()
+        .context("failed to run 'container ls'")?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let containers = parse_container_list(&stdout);
+    Ok(containers.into_iter().map(|(name, _)| name).collect())
+}
+
 /// List all agentbox containers.
 pub fn list(verbose: bool) -> Result<()> {
     if verbose {

@@ -31,10 +31,22 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Remove the container for current project
-    Rm,
-    /// Stop the container for current project
-    Stop,
+    /// Remove containers (by name, or current project if none specified)
+    Rm {
+        /// Container names to remove
+        names: Vec<String>,
+        /// Remove all agentbox containers
+        #[arg(long)]
+        all: bool,
+    },
+    /// Stop containers (by name, or current project if none specified)
+    Stop {
+        /// Container names to stop
+        names: Vec<String>,
+        /// Stop all agentbox containers
+        #[arg(long)]
+        all: bool,
+    },
     /// List all agentbox containers
     Ls,
     /// Force rebuild the container image
@@ -126,18 +138,44 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Rm) => {
-            let cwd = std::env::current_dir()?;
-            let name = container::container_name(&cwd.to_string_lossy());
-            container::rm(&name, cli.verbose)?;
-            println!("Removed {}", name);
+        Some(Commands::Rm { names, all }) => {
+            let targets = if all {
+                let all_names = container::list_names(cli.verbose)?;
+                if all_names.is_empty() {
+                    println!("No agentbox containers found.");
+                    return Ok(());
+                }
+                all_names
+            } else if names.is_empty() {
+                let cwd = std::env::current_dir()?;
+                vec![container::container_name(&cwd.to_string_lossy())]
+            } else {
+                names
+            };
+            for name in &targets {
+                container::rm(name, cli.verbose)?;
+                println!("Removed {}", name);
+            }
             Ok(())
         }
-        Some(Commands::Stop) => {
-            let cwd = std::env::current_dir()?;
-            let name = container::container_name(&cwd.to_string_lossy());
-            container::stop(&name, cli.verbose)?;
-            println!("Stopped {}", name);
+        Some(Commands::Stop { names, all }) => {
+            let targets = if all {
+                let all_names = container::list_names(cli.verbose)?;
+                if all_names.is_empty() {
+                    println!("No agentbox containers found.");
+                    return Ok(());
+                }
+                all_names
+            } else if names.is_empty() {
+                let cwd = std::env::current_dir()?;
+                vec![container::container_name(&cwd.to_string_lossy())]
+            } else {
+                names
+            };
+            for name in &targets {
+                container::stop(name, cli.verbose)?;
+                println!("Stopped {}", name);
+            }
             Ok(())
         }
         Some(Commands::Ls) => {
@@ -239,9 +277,27 @@ mod tests {
     }
 
     #[test]
-    fn test_rm_subcommand() {
+    fn test_rm_subcommand_no_args() {
         let cli = Cli::try_parse_from(["agentbox", "rm"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Rm)));
+        assert!(matches!(cli.command, Some(Commands::Rm { ref names, all }) if names.is_empty() && !all));
+    }
+
+    #[test]
+    fn test_rm_subcommand_with_names() {
+        let cli = Cli::try_parse_from(["agentbox", "rm", "agentbox-foo-abc123", "agentbox-bar-def456"]).unwrap();
+        match cli.command {
+            Some(Commands::Rm { names, all }) => {
+                assert_eq!(names, vec!["agentbox-foo-abc123", "agentbox-bar-def456"]);
+                assert!(!all);
+            }
+            _ => panic!("expected Rm"),
+        }
+    }
+
+    #[test]
+    fn test_rm_subcommand_all() {
+        let cli = Cli::try_parse_from(["agentbox", "rm", "--all"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Rm { ref names, all }) if names.is_empty() && all));
     }
 
     #[test]
@@ -251,9 +307,27 @@ mod tests {
     }
 
     #[test]
-    fn test_stop_subcommand() {
+    fn test_stop_subcommand_no_args() {
         let cli = Cli::try_parse_from(["agentbox", "stop"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Stop)));
+        assert!(matches!(cli.command, Some(Commands::Stop { ref names, all }) if names.is_empty() && !all));
+    }
+
+    #[test]
+    fn test_stop_subcommand_with_names() {
+        let cli = Cli::try_parse_from(["agentbox", "stop", "agentbox-foo-abc123", "agentbox-bar-def456"]).unwrap();
+        match cli.command {
+            Some(Commands::Stop { names, all }) => {
+                assert_eq!(names, vec!["agentbox-foo-abc123", "agentbox-bar-def456"]);
+                assert!(!all);
+            }
+            _ => panic!("expected Stop"),
+        }
+    }
+
+    #[test]
+    fn test_stop_subcommand_all() {
+        let cli = Cli::try_parse_from(["agentbox", "stop", "--all"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Stop { ref names, all }) if names.is_empty() && all));
     }
 
     #[test]

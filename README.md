@@ -42,11 +42,23 @@ agentbox "fix the failing tests"
 # List all containers
 agentbox ls
 
-# Stop the container
+# Stop current project's container
 agentbox stop
 
-# Remove the container
+# Stop specific containers
+agentbox stop agentbox-myapp-abc123 agentbox-other-def456
+
+# Stop all agentbox containers
+agentbox stop --all
+
+# Remove current project's container
 agentbox rm
+
+# Remove specific containers
+agentbox rm agentbox-myapp-abc123 agentbox-other-def456
+
+# Remove all agentbox containers
+agentbox rm --all
 
 # Force rebuild the image
 agentbox build
