@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 mod config;
 mod container;
 mod git;
+mod image;
 
 #[derive(Parser)]
 #[command(
