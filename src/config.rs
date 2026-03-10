@@ -46,11 +46,14 @@ impl Config {
     }
 
     pub fn config_path() -> PathBuf {
-        dirs::config_dir()
-            .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join("agentbox")
-            .join("config.toml")
+        let config_dir = std::env::var("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                dirs::home_dir()
+                    .unwrap_or_else(|| PathBuf::from("/tmp"))
+                    .join(".config")
+            });
+        config_dir.join("agentbox").join("config.toml")
     }
 
     pub fn effective_cpus(&self) -> usize {
