@@ -61,7 +61,20 @@ fn main() -> Result<()> {
         Some(Commands::Ls) => todo!("ls"),
         Some(Commands::Build) => todo!("build"),
         Some(Commands::Config { command }) => match command {
-            ConfigCommands::Init => todo!("config init"),
+            ConfigCommands::Init => {
+                let path = config::Config::config_path();
+                if path.exists() {
+                    eprintln!("Config already exists at {}", path.display());
+                    eprintln!("Edit it directly or remove it first.");
+                    std::process::exit(1);
+                }
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&path, config::Config::init_template())?;
+                println!("Created {}", path.display());
+                Ok(())
+            }
         },
         None => {
             if cli.task.is_empty() {
