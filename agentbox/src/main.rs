@@ -108,10 +108,36 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Rm) => todo!("rm"),
-        Some(Commands::Stop) => todo!("stop"),
-        Some(Commands::Ls) => todo!("ls"),
-        Some(Commands::Build) => todo!("build"),
+        Some(Commands::Rm) => {
+            let cwd = std::env::current_dir()?;
+            let name = container::container_name(&cwd.to_string_lossy());
+            container::rm(&name, cli.verbose)?;
+            println!("Removed {}", name);
+            Ok(())
+        }
+        Some(Commands::Stop) => {
+            let cwd = std::env::current_dir()?;
+            let name = container::container_name(&cwd.to_string_lossy());
+            container::stop(&name, cli.verbose)?;
+            println!("Stopped {}", name);
+            Ok(())
+        }
+        Some(Commands::Ls) => {
+            container::list(cli.verbose)?;
+            Ok(())
+        }
+        Some(Commands::Build) => {
+            let config = config::Config::load()?;
+            let cwd = std::env::current_dir()?;
+            let (dockerfile_content, image_tag) =
+                image::resolve_dockerfile(&cwd, cli.profile.as_deref(), &config)?;
+            let cache_key = image_tag.replace(':', "-");
+            eprintln!("Building {}...", image_tag);
+            image::build(&image_tag, &dockerfile_content, cli.verbose)?;
+            image::save_cache(&dockerfile_content, &cache_key, &image::cache_dir())?;
+            println!("Built {}", image_tag);
+            Ok(())
+        }
         Some(Commands::Config { command }) => match command {
             ConfigCommands::Init => {
                 let path = config::Config::config_path();
