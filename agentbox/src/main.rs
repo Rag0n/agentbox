@@ -1,6 +1,8 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+mod config;
+
 #[derive(Parser)]
 #[command(
     name = "agentbox",
