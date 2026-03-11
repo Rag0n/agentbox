@@ -13,6 +13,8 @@ pub struct Config {
     pub env: HashMap<String, String>,
     #[serde(default)]
     pub profiles: HashMap<String, Profile>,
+    #[serde(default)]
+    pub volumes: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -28,6 +30,7 @@ impl Default for Config {
             dockerfile: None,
             env: HashMap::new(),
             profiles: HashMap::new(),
+            volumes: Vec::new(),
         }
     }
 }
@@ -70,8 +73,15 @@ impl Config {
 # cpus = 4          # default: half of host cores
 # memory = "8G"     # default: 8G
 
+# Additional volumes to mount into containers
+# volumes = [
+#   "~/.config/worktrunk",              # tilde = home-relative mapping
+#   "/opt/shared-libs",                  # absolute = same path in container
+#   "/source/path:/dest/path",          # explicit source:dest mapping
+# ]
+
 # Override the default Dockerfile for all projects
-# dockerfile = "/path/to/my-default.Dockerfile"
+# dockerfile = "~/.config/agentbox/Dockerfile.custom"
 
 # Environment variables to pass into container
 # [env]
@@ -147,11 +157,34 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_config_with_volumes() {
+        let toml_str = r#"
+            volumes = [
+                "~/.config/worktrunk",
+                "/Users/alex/Dev/marketplace",
+                "/source/path:/dest/path",
+            ]
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.volumes.len(), 3);
+        assert_eq!(config.volumes[0], "~/.config/worktrunk");
+        assert_eq!(config.volumes[1], "/Users/alex/Dev/marketplace");
+        assert_eq!(config.volumes[2], "/source/path:/dest/path");
+    }
+
+    #[test]
+    fn test_default_config_has_empty_volumes() {
+        let config = Config::default();
+        assert!(config.volumes.is_empty());
+    }
+
+    #[test]
     fn test_config_init_content() {
         let content = Config::init_template();
         assert!(content.contains("# cpus"));
         assert!(content.contains("# memory"));
         assert!(content.contains("# [env]"));
         assert!(content.contains("# [profiles."));
+        assert!(content.contains("# volumes"));
     }
 }
