@@ -129,21 +129,25 @@ fn create_and_run(
     // Git identity
     env_vars.extend(git::git_env_vars());
 
-    // Ensure ~/.claude and ~/.claude.json exist on host before mounting
+    // Ensure ~/.claude exists on host before mounting
     let claude_dir = home.join(".claude");
     if !claude_dir.exists() {
         std::fs::create_dir_all(&claude_dir)?;
-    }
-    let claude_json = home.join(".claude.json");
-    if !claude_json.exists() {
-        std::fs::write(&claude_json, "{}")?;
     }
 
     let mut volumes = vec![
         format!("{}:{}", workdir, workdir),
         format!("{}:/home/user/.claude", home.join(".claude").display()),
-        format!("{}:/home/user/.claude.json", claude_json.display()),
     ];
+
+    // Seed container with host's .claude.json (read-only to avoid conflicts)
+    let claude_json = home.join(".claude.json");
+    if claude_json.exists() {
+        volumes.push(format!(
+            "{}:/tmp/claude-seed.json:ro",
+            claude_json.display()
+        ));
+    }
 
     // Append config volumes + CLI mounts
     for spec in config.volumes.iter().chain(extra_volumes.iter()) {

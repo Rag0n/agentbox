@@ -17,6 +17,7 @@ fn expand_tilde(path: &Path) -> Result<PathBuf> {
 }
 
 pub const DEFAULT_DOCKERFILE: &str = include_str!("../resources/Dockerfile.default");
+pub const ENTRYPOINT_SCRIPT: &str = include_str!("../resources/entrypoint.sh");
 
 pub fn checksum(content: &str) -> String {
     format!("{:x}", Sha256::digest(content.as_bytes()))
@@ -149,6 +150,9 @@ pub fn build(tag: &str, dockerfile_content: &str, no_cache: bool, verbose: bool)
     let tmp = tempfile::tempdir().context("failed to create temp dir")?;
     let df_path = tmp.path().join("Dockerfile");
     std::fs::write(&df_path, dockerfile_content)?;
+    // Write entrypoint script so Dockerfile COPY can find it
+    let ep_path = tmp.path().join("entrypoint.sh");
+    std::fs::write(&ep_path, ENTRYPOINT_SCRIPT)?;
 
     let args = build_args(
         tag,

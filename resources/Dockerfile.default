@@ -15,9 +15,11 @@ RUN apt-get update \
 RUN useradd -m -s /bin/bash -G sudo user \
     && echo "user ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/user
 
+COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
+
 USER user
 WORKDIR /home/user
 
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
-ENTRYPOINT ["claude", "--dangerously-skip-permissions"]
+ENTRYPOINT ["entrypoint.sh"]
