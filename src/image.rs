@@ -45,8 +45,13 @@ pub fn resolve_dockerfile(
     if let Some(name) = profile {
         if let Some(p) = config.profiles.get(name) {
             let df_path = expand_tilde(&p.dockerfile)?;
-            let content = std::fs::read_to_string(&df_path)
-                .with_context(|| format!("failed to read profile '{}' Dockerfile: {}", name, df_path.display()))?;
+            let content = std::fs::read_to_string(&df_path).with_context(|| {
+                format!(
+                    "failed to read profile '{}' Dockerfile: {}",
+                    name,
+                    df_path.display()
+                )
+            })?;
             return Ok((content, format!("agentbox:profile-{}", name)));
         } else {
             anyhow::bail!("profile '{}' not found in config", name);
@@ -94,8 +99,7 @@ pub fn save_cache(dockerfile_content: &str, cache_key: &str, cache_path: &Path) 
 fn references_default_base(dockerfile_content: &str) -> bool {
     dockerfile_content.lines().any(|line| {
         let trimmed = line.trim().to_lowercase();
-        trimmed == "from agentbox:default"
-            || trimmed.starts_with("from agentbox:default ")
+        trimmed == "from agentbox:default" || trimmed.starts_with("from agentbox:default ")
     })
 }
 
@@ -108,29 +112,37 @@ pub fn ensure_base_image(dockerfile_content: &str, verbose: bool) -> Result<()> 
     let cache_key = "agentbox-default";
     if needs_build(DEFAULT_DOCKERFILE, cache_key, &cache_dir()) {
         eprintln!("Building base image agentbox:default...");
-        build("agentbox:default", DEFAULT_DOCKERFILE, verbose)?;
+        build("agentbox:default", DEFAULT_DOCKERFILE, false, verbose)?;
         save_cache(DEFAULT_DOCKERFILE, cache_key, &cache_dir())?;
     }
     Ok(())
 }
 
 /// Build an image using `container build`.
-pub fn build(tag: &str, dockerfile_content: &str, verbose: bool) -> Result<()> {
+pub fn build(tag: &str, dockerfile_content: &str, no_cache: bool, verbose: bool) -> Result<()> {
     let tmp = tempfile::tempdir().context("failed to create temp dir")?;
     let df_path = tmp.path().join("Dockerfile");
     std::fs::write(&df_path, dockerfile_content)?;
 
+    let mut args = vec![
+        "build".to_string(),
+        "--pull".into(),
+        "-t".into(),
+        tag.to_string(),
+        "-f".into(),
+        df_path.to_string_lossy().to_string(),
+    ];
+    if no_cache {
+        args.push("--no-cache".into());
+    }
+    args.push(tmp.path().to_string_lossy().to_string());
+
     if verbose {
-        eprintln!("[agentbox] container build -t {} -f {} {}", tag, df_path.display(), tmp.path().display());
+        eprintln!("[agentbox] container {}", args.join(" "));
     }
 
     let status = std::process::Command::new("container")
-        .args([
-            "build",
-            "-t", tag,
-            "-f", &df_path.to_string_lossy(),
-            &tmp.path().to_string_lossy(),
-        ])
+        .args(&args)
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
@@ -187,11 +199,7 @@ mod tests {
         let project_df = tmp.path().join("agentbox.Dockerfile");
         std::fs::write(&project_df, "FROM test:project").unwrap();
 
-        let (content, tag) = resolve_dockerfile(
-            tmp.path(),
-            None,
-            &Config::default(),
-        ).unwrap();
+        let (content, tag) = resolve_dockerfile(tmp.path(), None, &Config::default()).unwrap();
 
         assert!(content.contains("FROM test:project"));
         assert!(tag.starts_with("agentbox:project-"));
@@ -201,11 +209,7 @@ mod tests {
     fn test_resolve_dockerfile_falls_through_to_default() {
         let tmp = tempfile::tempdir().unwrap();
 
-        let (content, tag) = resolve_dockerfile(
-            tmp.path(),
-            None,
-            &Config::default(),
-        ).unwrap();
+        let (content, tag) = resolve_dockerfile(tmp.path(), None, &Config::default()).unwrap();
 
         assert!(content.contains("debian:bookworm-slim"));
         assert_eq!(tag, "agentbox:default");
@@ -220,7 +224,9 @@ mod tests {
     #[test]
     fn test_references_default_base() {
         assert!(references_default_base("FROM agentbox:default"));
-        assert!(references_default_base("FROM agentbox:default\nRUN apt-get update"));
+        assert!(references_default_base(
+            "FROM agentbox:default\nRUN apt-get update"
+        ));
         assert!(references_default_base("  FROM agentbox:default  "));
         assert!(references_default_base("FROM agentbox:default AS builder"));
         assert!(references_default_base("from agentbox:default as base"));
