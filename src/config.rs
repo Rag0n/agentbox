@@ -13,6 +13,8 @@ pub struct Config {
     pub env: HashMap<String, String>,
     #[serde(default)]
     pub profiles: HashMap<String, Profile>,
+    #[serde(default)]
+    pub volumes: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -28,6 +30,7 @@ impl Default for Config {
             dockerfile: None,
             env: HashMap::new(),
             profiles: HashMap::new(),
+            volumes: Vec::new(),
         }
     }
 }
@@ -144,6 +147,28 @@ mod tests {
         let cpus = config.effective_cpus();
         assert!(cpus >= 1);
         assert!(cpus <= num_cpus::get());
+    }
+
+    #[test]
+    fn test_parse_config_with_volumes() {
+        let toml_str = r#"
+            volumes = [
+                "~/.config/worktrunk",
+                "/Users/alex/Dev/marketplace",
+                "/source/path:/dest/path",
+            ]
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.volumes.len(), 3);
+        assert_eq!(config.volumes[0], "~/.config/worktrunk");
+        assert_eq!(config.volumes[1], "/Users/alex/Dev/marketplace");
+        assert_eq!(config.volumes[2], "/source/path:/dest/path");
+    }
+
+    #[test]
+    fn test_default_config_has_empty_volumes() {
+        let config = Config::default();
+        assert!(config.volumes.is_empty());
     }
 
     #[test]
