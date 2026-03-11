@@ -78,6 +78,13 @@ memory = "8G"     # default: 8G
 # Override default Dockerfile
 dockerfile = "/path/to/my.Dockerfile"
 
+# Additional volumes to mount into containers
+volumes = [
+  "~/.config/worktrunk",              # tilde = home-relative mapping
+  "/opt/shared-libs",                  # absolute = same path in container
+  "/source/path:/dest/path",          # explicit source:dest mapping
+]
+
 # Environment variables passed into container
 [env]
 GH_TOKEN = ""           # empty = inherit from host
@@ -155,6 +162,22 @@ Your `~/.claude` settings directory is mounted into the container, so project se
 | Current directory | Same path | read/write |
 | `~/.claude` | `/home/user/.claude` | read/write |
 | `~/.claude.json` | `/home/user/.claude.json` | read/write |
+| Additional volumes | Configured path | read/write |
+
+Additional volumes can be mounted via config or CLI:
+
+```bash
+# Mount extra directories per-invocation
+agentbox --mount ~/.config/worktrunk --mount /path/to/other/dir
+```
+
+Three path formats are supported:
+
+| Format | Example | Behavior |
+|--------|---------|----------|
+| Tilde prefix | `~/.config/foo` | Host `~/` → container `/home/user/` |
+| Absolute path | `/some/path` | Same path in container |
+| Explicit mapping | `/source:/dest` | Custom source → dest |
 
 ## What's Isolated
 

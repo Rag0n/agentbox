@@ -76,7 +76,7 @@ impl Config {
 # Additional volumes to mount into containers
 # volumes = [
 #   "~/.config/worktrunk",              # tilde = home-relative mapping
-#   "/Users/alex/Dev/marketplace",      # absolute = same path in container
+#   "/opt/shared-libs",                  # absolute = same path in container
 #   "/source/path:/dest/path",          # explicit source:dest mapping
 # ]
 
