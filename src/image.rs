@@ -118,24 +118,45 @@ pub fn ensure_base_image(dockerfile_content: &str, verbose: bool) -> Result<()> 
     Ok(())
 }
 
+/// Build args for `container build`. Extracted for testability.
+fn build_args(
+    tag: &str,
+    dockerfile_content: &str,
+    dockerfile_path: &str,
+    context_path: &str,
+    no_cache: bool,
+) -> Vec<String> {
+    let mut args = vec!["build".to_string()];
+    // Only --pull when the base image is remote; skip for local agentbox:default.
+    if !references_default_base(dockerfile_content) {
+        args.push("--pull".into());
+    }
+    args.extend([
+        "-t".into(),
+        tag.to_string(),
+        "-f".into(),
+        dockerfile_path.to_string(),
+    ]);
+    if no_cache {
+        args.push("--no-cache".into());
+    }
+    args.push(context_path.to_string());
+    args
+}
+
 /// Build an image using `container build`.
 pub fn build(tag: &str, dockerfile_content: &str, no_cache: bool, verbose: bool) -> Result<()> {
     let tmp = tempfile::tempdir().context("failed to create temp dir")?;
     let df_path = tmp.path().join("Dockerfile");
     std::fs::write(&df_path, dockerfile_content)?;
 
-    let mut args = vec![
-        "build".to_string(),
-        "--pull".into(),
-        "-t".into(),
-        tag.to_string(),
-        "-f".into(),
-        df_path.to_string_lossy().to_string(),
-    ];
-    if no_cache {
-        args.push("--no-cache".into());
-    }
-    args.push(tmp.path().to_string_lossy().to_string());
+    let args = build_args(
+        tag,
+        dockerfile_content,
+        &df_path.to_string_lossy(),
+        &tmp.path().to_string_lossy(),
+        no_cache,
+    );
 
     if verbose {
         eprintln!("[agentbox] container {}", args.join(" "));
@@ -238,6 +259,43 @@ mod tests {
         assert!(!references_default_base("FROM agentbox:profile-ruby"));
         assert!(!references_default_base("# FROM agentbox:default"));
         assert!(!references_default_base("RUN echo agentbox:default"));
+    }
+
+    #[test]
+    fn test_build_args_pull_for_remote_base() {
+        let args = build_args(
+            "agentbox:default",
+            "FROM debian:bookworm-slim\nRUN echo hi",
+            "/tmp/Dockerfile",
+            "/tmp",
+            false,
+        );
+        assert!(args.contains(&"--pull".to_string()));
+    }
+
+    #[test]
+    fn test_build_args_no_pull_for_local_base() {
+        let args = build_args(
+            "agentbox:project-myapp",
+            "FROM agentbox:default\nRUN apt-get install -y nodejs",
+            "/tmp/Dockerfile",
+            "/tmp",
+            false,
+        );
+        assert!(!args.contains(&"--pull".to_string()));
+    }
+
+    #[test]
+    fn test_build_args_no_cache_flag() {
+        let args = build_args(
+            "agentbox:default",
+            "FROM debian:bookworm-slim",
+            "/tmp/Dockerfile",
+            "/tmp",
+            true,
+        );
+        assert!(args.contains(&"--no-cache".to_string()));
+        assert!(args.contains(&"--pull".to_string()));
     }
 
     #[test]
