@@ -110,6 +110,44 @@ Define in config, use with `--profile`:
 agentbox --profile mystack
 ```
 
+## Authentication
+
+On macOS, Claude Code stores OAuth tokens in the macOS Keychain — which is not accessible from inside a Linux container. You need to provide credentials via environment variable.
+
+**Option A: API key** — set `ANTHROPIC_API_KEY` in your config or shell:
+
+```toml
+# ~/.config/agentbox/config.toml
+[env]
+ANTHROPIC_API_KEY = ""  # empty = inherit from host env
+```
+
+**Option B: OAuth token (Pro/Max subscription):**
+
+1. Generate a long-lived token on the host:
+
+   ```bash
+   claude setup-token
+   ```
+
+   This prints an export command with your OAuth token. Copy the token value.
+
+2. Add it to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.):
+
+   ```bash
+   export CLAUDE_CODE_OAUTH_TOKEN="your-token-here"
+   ```
+
+3. Tell agentbox to pass it into the container:
+
+   ```toml
+   # ~/.config/agentbox/config.toml
+   [env]
+   CLAUDE_CODE_OAUTH_TOKEN = ""  # empty = inherit from host env
+   ```
+
+Your `~/.claude` settings directory is mounted into the container, so project settings, CLAUDE.md trust, and preferences carry over automatically. Only the secret token needs to be passed explicitly.
+
 ## What's Mounted
 
 | Host | Container | Access |
