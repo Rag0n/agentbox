@@ -44,6 +44,7 @@ impl RunOpts {
         args.extend(["--cpus".into(), self.cpus.to_string()]);
         args.extend(["--memory".into(), self.memory.clone()]);
         args.extend(["--workdir".into(), self.workdir.clone()]);
+        args.push("--init".into());
 
         if self.interactive {
             args.push("--interactive".into());
@@ -326,6 +327,7 @@ mod tests {
         assert!(args.contains(&"4".to_string()));
         assert!(args.contains(&"--memory".to_string()));
         assert!(args.contains(&"8G".to_string()));
+        assert!(args.contains(&"--init".to_string()));
         assert!(args.contains(&"--interactive".to_string()));
         assert!(args.contains(&"--tty".to_string()));
     }
