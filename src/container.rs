@@ -147,6 +147,7 @@ pub fn exec(name: &str, task: Option<&str>, verbose: bool) -> Result<()> {
         args.push("--interactive".into());
         args.push("--tty".into());
     }
+    args.extend(["--user".into(), "user".to_string()]);
     args.push(name.to_string());
     args.push("claude".into());
     args.push("--dangerously-skip-permissions".into());

@@ -91,7 +91,11 @@ fn create_and_run(
     // Git identity
     env_vars.extend(git::git_env_vars());
 
-    // Ensure ~/.claude.json exists
+    // Ensure ~/.claude and ~/.claude.json exist on host before mounting
+    let claude_dir = home.join(".claude");
+    if !claude_dir.exists() {
+        std::fs::create_dir_all(&claude_dir)?;
+    }
     let claude_json = home.join(".claude.json");
     if !claude_json.exists() {
         std::fs::write(&claude_json, "{}")?;
