@@ -4,6 +4,18 @@ use std::path::{Path, PathBuf};
 
 use crate::config::Config;
 
+fn expand_tilde(path: &Path) -> Result<PathBuf> {
+    let s = path.to_string_lossy();
+    if let Some(suffix) = s.strip_prefix("~/") {
+        let home = dirs::home_dir().context("cannot determine home directory")?;
+        Ok(home.join(suffix))
+    } else if s == "~" {
+        dirs::home_dir().context("cannot determine home directory")
+    } else {
+        Ok(path.to_path_buf())
+    }
+}
+
 pub const DEFAULT_DOCKERFILE: &str = include_str!("../resources/Dockerfile.default");
 
 pub fn checksum(content: &str) -> String {
@@ -32,8 +44,9 @@ pub fn resolve_dockerfile(
     // 2. Named profile
     if let Some(name) = profile {
         if let Some(p) = config.profiles.get(name) {
-            let content = std::fs::read_to_string(&p.dockerfile)
-                .with_context(|| format!("failed to read profile '{}' Dockerfile: {}", name, p.dockerfile.display()))?;
+            let df_path = expand_tilde(&p.dockerfile)?;
+            let content = std::fs::read_to_string(&df_path)
+                .with_context(|| format!("failed to read profile '{}' Dockerfile: {}", name, df_path.display()))?;
             return Ok((content, format!("agentbox:profile-{}", name)));
         } else {
             anyhow::bail!("profile '{}' not found in config", name);
@@ -42,8 +55,9 @@ pub fn resolve_dockerfile(
 
     // 3. Global default override
     if let Some(ref df) = config.dockerfile {
-        let content = std::fs::read_to_string(df)
-            .with_context(|| format!("failed to read {}", df.display()))?;
+        let df_path = expand_tilde(df)?;
+        let content = std::fs::read_to_string(&df_path)
+            .with_context(|| format!("failed to read {}", df_path.display()))?;
         return Ok((content, "agentbox:default".into()));
     }
 
@@ -151,6 +165,20 @@ mod tests {
         let a = checksum("version 1");
         let b = checksum("version 2");
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_expand_tilde_home_relative() {
+        let home = dirs::home_dir().unwrap();
+        let expanded = expand_tilde(Path::new("~/foo/bar")).unwrap();
+        assert_eq!(expanded, home.join("foo/bar"));
+    }
+
+    #[test]
+    fn test_expand_tilde_absolute_unchanged() {
+        let path = Path::new("/absolute/path");
+        let expanded = expand_tilde(path).unwrap();
+        assert_eq!(expanded, PathBuf::from("/absolute/path"));
     }
 
     #[test]
