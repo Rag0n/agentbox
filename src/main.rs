@@ -25,6 +25,10 @@ struct Cli {
     #[arg(long)]
     verbose: bool,
 
+    /// Additional volume mounts (host path, or host:container)
+    #[arg(long)]
+    mount: Vec<String>,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -85,6 +89,26 @@ fn build_env_vars(config_env: &std::collections::HashMap<String, String>) -> Vec
     env_vars
 }
 
+/// Resolve a volume spec into a "source:dest" string.
+///
+/// Rules:
+/// - `~/.config/foo` → expand ~ to host home for source, /home/user for dest
+/// - `/source:/dest` → pass through as-is (explicit mapping)
+/// - `/absolute/path` → mount at same path in container
+fn resolve_volume(spec: &str) -> Result<String> {
+    if let Some(suffix) = spec.strip_prefix('~') {
+        let home = dirs::home_dir().context("cannot determine home directory")?;
+        let suffix = suffix.strip_prefix('/').unwrap_or(suffix);
+        let source = home.join(suffix);
+        let dest = format!("/home/user/{}", suffix);
+        Ok(format!("{}:{}", source.display(), dest))
+    } else if spec.contains(':') {
+        Ok(spec.to_string())
+    } else {
+        Ok(format!("{}:{}", spec, spec))
+    }
+}
+
 fn create_and_run(
     name: &str,
     image_tag: &str,
@@ -92,6 +116,7 @@ fn create_and_run(
     config: &config::Config,
     task: Option<&str>,
     verbose: bool,
+    extra_volumes: &[String],
 ) -> Result<()> {
     let home = dirs::home_dir().context("cannot determine home directory")?;
 
@@ -110,6 +135,22 @@ fn create_and_run(
         std::fs::write(&claude_json, "{}")?;
     }
 
+    let mut volumes = vec![
+        format!("{}:{}", workdir, workdir),
+        format!("{}:/home/user/.claude", home.join(".claude").display()),
+        format!("{}:/home/user/.claude.json", claude_json.display()),
+    ];
+
+    // Append config volumes + CLI mounts
+    for spec in config.volumes.iter().chain(extra_volumes.iter()) {
+        let resolved = resolve_volume(spec)?;
+        let source = resolved.split(':').next().unwrap_or("");
+        if !std::path::Path::new(source).exists() {
+            eprintln!("[agentbox] warning: mount source does not exist: {}", source);
+        }
+        volumes.push(resolved);
+    }
+
     let opts = container::RunOpts {
         name: name.into(),
         image: image_tag.into(),
@@ -117,11 +158,7 @@ fn create_and_run(
         cpus: config.effective_cpus(),
         memory: config.memory.clone(),
         env_vars,
-        volumes: vec![
-            format!("{}:{}", workdir, workdir),
-            format!("{}:/home/user/.claude", home.join(".claude").display()),
-            format!("{}:/home/user/.claude.json", claude_json.display()),
-        ],
+        volumes,
         interactive: task.is_none(),
         task: task.map(String::from),
     };
@@ -267,7 +304,7 @@ fn main() -> Result<()> {
                         image::ensure_base_image(&dockerfile_content, cli.verbose)?;
                         image::build(&image_tag, &dockerfile_content, cli.verbose)?;
                         image::save_cache(&dockerfile_content, &cache_key, &image::cache_dir())?;
-                        create_and_run(&name, &image_tag, &cwd_str, &config, task_str.as_deref(), cli.verbose)?;
+                        create_and_run(&name, &image_tag, &cwd_str, &config, task_str.as_deref(), cli.verbose, &cli.mount)?;
                     } else {
                         container::start(&name, cli.verbose)?;
                         container::exec(&name, task_str.as_deref(), cli.verbose)?;
@@ -283,7 +320,7 @@ fn main() -> Result<()> {
                         image::build(&image_tag, &dockerfile_content, cli.verbose)?;
                         image::save_cache(&dockerfile_content, &cache_key, &image::cache_dir())?;
                     }
-                    create_and_run(&name, &image_tag, &cwd_str, &config, task_str.as_deref(), cli.verbose)?;
+                    create_and_run(&name, &image_tag, &cwd_str, &config, task_str.as_deref(), cli.verbose, &cli.mount)?;
                 }
             }
             Ok(())
@@ -425,5 +462,58 @@ mod tests {
         let env = build_env_vars(&config_env);
         // Empty config with no host var → default survives
         assert!(env.iter().any(|(k, v)| k == "COLORTERM" && v == "truecolor"));
+    }
+
+    #[test]
+    fn test_mount_flag_single() {
+        let cli = Cli::try_parse_from(["agentbox", "--mount", "/some/path"]).unwrap();
+        assert_eq!(cli.mount, vec!["/some/path"]);
+    }
+
+    #[test]
+    fn test_mount_flag_multiple() {
+        let cli = Cli::try_parse_from([
+            "agentbox",
+            "--mount", "~/.config/foo",
+            "--mount", "/other/path",
+        ]).unwrap();
+        assert_eq!(cli.mount.len(), 2);
+    }
+
+    #[test]
+    fn test_mount_flag_default_empty() {
+        let cli = Cli::try_parse_from(["agentbox"]).unwrap();
+        assert!(cli.mount.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_volume_tilde_path() {
+        let home = dirs::home_dir().unwrap();
+        let resolved = resolve_volume("~/.config/worktrunk").unwrap();
+        let expected = format!(
+            "{}:/home/user/.config/worktrunk",
+            home.join(".config/worktrunk").display()
+        );
+        assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn test_resolve_volume_absolute_path() {
+        let resolved = resolve_volume("/Users/alex/Dev/marketplace").unwrap();
+        assert_eq!(resolved, "/Users/alex/Dev/marketplace:/Users/alex/Dev/marketplace");
+    }
+
+    #[test]
+    fn test_resolve_volume_explicit_mapping() {
+        let resolved = resolve_volume("/source/path:/dest/path").unwrap();
+        assert_eq!(resolved, "/source/path:/dest/path");
+    }
+
+    #[test]
+    fn test_resolve_volume_tilde_only() {
+        let home = dirs::home_dir().unwrap();
+        let resolved = resolve_volume("~/mydir").unwrap();
+        let expected = format!("{}:/home/user/mydir", home.join("mydir").display());
+        assert_eq!(resolved, expected);
     }
 }

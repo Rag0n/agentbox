@@ -73,6 +73,13 @@ impl Config {
 # cpus = 4          # default: half of host cores
 # memory = "8G"     # default: 8G
 
+# Additional volumes to mount into containers
+# volumes = [
+#   "~/.config/worktrunk",              # tilde = home-relative mapping
+#   "/Users/alex/Dev/marketplace",      # absolute = same path in container
+#   "/source/path:/dest/path",          # explicit source:dest mapping
+# ]
+
 # Override the default Dockerfile for all projects
 # dockerfile = "/path/to/my-default.Dockerfile"
 
@@ -178,5 +185,6 @@ mod tests {
         assert!(content.contains("# memory"));
         assert!(content.contains("# [env]"));
         assert!(content.contains("# [profiles."));
+        assert!(content.contains("# volumes"));
     }
 }
