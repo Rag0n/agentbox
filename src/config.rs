@@ -126,7 +126,10 @@ mod tests {
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.cpus, Some(4));
         assert_eq!(config.memory, "16G");
-        assert_eq!(config.dockerfile, Some(PathBuf::from("/path/to/Dockerfile")));
+        assert_eq!(
+            config.dockerfile,
+            Some(PathBuf::from("/path/to/Dockerfile"))
+        );
         assert_eq!(config.env.get("GH_TOKEN").unwrap(), "");
         assert_eq!(config.env.get("LINEAR_API_KEY").unwrap(), "abc123");
         assert_eq!(

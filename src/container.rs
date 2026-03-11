@@ -10,7 +10,13 @@ pub fn container_name(path: &str) -> String {
         .to_string_lossy()
         .to_lowercase()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect::<String>();
     let hash = format!("{:x}", Sha256::digest(path.as_bytes()));
     let short_hash = &hash[..6];
@@ -70,10 +76,10 @@ pub enum ContainerStatus {
     NotFound,
 }
 
-/// Check container status using `container inspect --format json`.
+/// Check container status using `container inspect`.
 pub fn status(name: &str) -> Result<ContainerStatus> {
     let output = Command::new("container")
-        .args(["inspect", "--format", "json", name])
+        .args(["inspect", name])
         .output()
         .context("failed to run 'container inspect'")?;
 
@@ -90,7 +96,7 @@ pub fn status(name: &str) -> Result<ContainerStatus> {
 /// Parse container status from inspect JSON.
 fn parse_status(json: &serde_json::Value) -> ContainerStatus {
     let status_str = json
-        .pointer("/status")
+        .pointer("/0/status")
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
@@ -103,15 +109,16 @@ fn parse_status(json: &serde_json::Value) -> ContainerStatus {
 
 /// Parse container list JSON, returning (name, state) pairs for agentbox containers.
 fn parse_container_list(json_str: &str) -> Vec<(String, String)> {
-    let containers: Vec<serde_json::Value> = serde_json::from_str(json_str)
-        .unwrap_or_default();
+    let containers: Vec<serde_json::Value> = serde_json::from_str(json_str).unwrap_or_default();
     let mut result = Vec::new();
     for json in &containers {
-        let name = json.pointer("/configuration/id")
+        let name = json
+            .pointer("/configuration/id")
             .and_then(|v| v.as_str())
             .unwrap_or("");
         if name.starts_with("agentbox-") {
-            let state = json.pointer("/status")
+            let state = json
+                .pointer("/status")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
             result.push((name.to_string(), state.to_string()));
@@ -140,20 +147,37 @@ pub fn run(opts: &RunOpts, verbose: bool) -> Result<()> {
     Ok(())
 }
 
-/// Exec into a running container.
-pub fn exec(name: &str, task: Option<&str>, verbose: bool) -> Result<()> {
+/// Build the argument list for `container exec`.
+fn build_exec_args(name: &str, task: Option<&str>, env_vars: &[(String, String)]) -> Vec<String> {
     let mut args = vec!["exec".to_string()];
     if task.is_none() {
         args.push("--interactive".into());
         args.push("--tty".into());
     }
+    for (key, val) in env_vars {
+        args.extend(["--env".into(), format!("{}={}", key, val)]);
+    }
     args.extend(["--user".into(), "user".to_string()]);
     args.push(name.to_string());
-    args.push("claude".into());
-    args.push("--dangerously-skip-permissions".into());
+    // Use login shell so PATH includes ~/.local/bin where claude is installed
+    args.push("bash".into());
+    args.extend(["-lc".into()]);
+    let mut cmd = "claude --dangerously-skip-permissions".to_string();
     if let Some(t) = task {
-        args.extend(["-p".into(), t.to_string()]);
+        cmd.push_str(&format!(" -p '{}'", t.replace('\'', "'\\''")));
     }
+    args.push(cmd);
+    args
+}
+
+/// Exec into a running container.
+pub fn exec(
+    name: &str,
+    task: Option<&str>,
+    env_vars: &[(String, String)],
+    verbose: bool,
+) -> Result<()> {
+    let args = build_exec_args(name, task, env_vars);
 
     if verbose {
         eprintln!("[agentbox] container {}", args.join(" "));
@@ -290,12 +314,8 @@ mod tests {
             workdir: "/Users/alex/Dev/myapp".into(),
             cpus: 4,
             memory: "8G".into(),
-            env_vars: vec![
-                ("GH_TOKEN".into(), "tok123".into()),
-            ],
-            volumes: vec![
-                "/Users/alex/Dev/myapp:/Users/alex/Dev/myapp".into(),
-            ],
+            env_vars: vec![("GH_TOKEN".into(), "tok123".into())],
+            volumes: vec!["/Users/alex/Dev/myapp:/Users/alex/Dev/myapp".into()],
             interactive: true,
             task: None,
         };
@@ -312,19 +332,25 @@ mod tests {
 
     #[test]
     fn test_parse_status_running() {
-        let json: serde_json::Value = serde_json::json!({"status": "running"});
+        let json: serde_json::Value = serde_json::json!([{"status": "running"}]);
         assert_eq!(parse_status(&json), ContainerStatus::Running);
     }
 
     #[test]
     fn test_parse_status_stopped() {
-        let json: serde_json::Value = serde_json::json!({"status": "stopped"});
+        let json: serde_json::Value = serde_json::json!([{"status": "stopped"}]);
         assert_eq!(parse_status(&json), ContainerStatus::Stopped);
     }
 
     #[test]
     fn test_parse_status_missing() {
-        let json: serde_json::Value = serde_json::json!({});
+        let json: serde_json::Value = serde_json::json!([{}]);
+        assert_eq!(parse_status(&json), ContainerStatus::NotFound);
+    }
+
+    #[test]
+    fn test_parse_status_empty_array() {
+        let json: serde_json::Value = serde_json::json!([]);
         assert_eq!(parse_status(&json), ContainerStatus::NotFound);
     }
 
@@ -346,8 +372,14 @@ mod tests {
         ]);
         let result = parse_container_list(&json.to_string());
         assert_eq!(result.len(), 2);
-        assert_eq!(result[0], ("agentbox-myapp-abc123".into(), "stopped".into()));
-        assert_eq!(result[1], ("agentbox-other-def456".into(), "running".into()));
+        assert_eq!(
+            result[0],
+            ("agentbox-myapp-abc123".into(), "stopped".into())
+        );
+        assert_eq!(
+            result[1],
+            ("agentbox-other-def456".into(), "running".into())
+        );
     }
 
     #[test]
@@ -358,6 +390,34 @@ mod tests {
     #[test]
     fn test_parse_container_list_invalid_json() {
         assert!(parse_container_list("not json").is_empty());
+    }
+
+    #[test]
+    fn test_exec_args_with_env_vars() {
+        let env_vars = vec![
+            ("GH_TOKEN".to_string(), "tok123".to_string()),
+            ("TERM".to_string(), "xterm".to_string()),
+        ];
+        let args = build_exec_args("mycontainer", Some("fix tests"), &env_vars);
+        assert!(args.contains(&"--env".to_string()));
+        assert!(args.contains(&"GH_TOKEN=tok123".to_string()));
+        assert!(args.contains(&"TERM=xterm".to_string()));
+        assert!(!args.contains(&"--interactive".to_string()));
+        // Task passed inside bash -lc command string
+        assert!(args.contains(&"bash".to_string()));
+        let cmd = args.last().unwrap();
+        assert!(cmd.contains("claude --dangerously-skip-permissions"));
+        assert!(cmd.contains("-p 'fix tests'"));
+    }
+
+    #[test]
+    fn test_exec_args_interactive_no_task() {
+        let args = build_exec_args("mycontainer", None, &[]);
+        assert!(args.contains(&"--interactive".to_string()));
+        assert!(args.contains(&"--tty".to_string()));
+        // No -p flag in command string when no task
+        let cmd = args.last().unwrap();
+        assert_eq!(cmd, "claude --dangerously-skip-permissions");
     }
 
     #[test]
