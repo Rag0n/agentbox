@@ -64,6 +64,27 @@ enum ConfigCommands {
     Init,
 }
 
+fn build_env_vars(config_env: &std::collections::HashMap<String, String>) -> Vec<(String, String)> {
+    let mut env_vars: Vec<(String, String)> = vec![
+        ("COLORTERM".into(), "truecolor".into()),
+        ("TERM".into(), "xterm-256color".into()),
+    ];
+
+    for (key, val) in config_env {
+        let value = if val.is_empty() {
+            std::env::var(key).unwrap_or_default()
+        } else {
+            val.clone()
+        };
+        if !value.is_empty() {
+            env_vars.retain(|(k, _)| k != key);
+            env_vars.push((key.clone(), value));
+        }
+    }
+
+    env_vars
+}
+
 fn create_and_run(
     name: &str,
     image_tag: &str,
@@ -74,19 +95,7 @@ fn create_and_run(
 ) -> Result<()> {
     let home = dirs::home_dir().context("cannot determine home directory")?;
 
-    let mut env_vars: Vec<(String, String)> = Vec::new();
-
-    // Config env vars (empty value = inherit from host)
-    for (key, val) in &config.env {
-        let value = if val.is_empty() {
-            std::env::var(key).unwrap_or_default()
-        } else {
-            val.clone()
-        };
-        if !value.is_empty() {
-            env_vars.push((key.clone(), value));
-        }
-    }
+    let mut env_vars = build_env_vars(&config.env);
 
     // Git identity
     env_vars.extend(git::git_env_vars());
@@ -379,5 +388,42 @@ mod tests {
     fn test_verbose_flag() {
         let cli = Cli::try_parse_from(["agentbox", "--verbose"]).unwrap();
         assert!(cli.verbose);
+    }
+
+    #[test]
+    fn test_build_env_vars_defaults() {
+        let env = build_env_vars(&std::collections::HashMap::new());
+        assert!(env.iter().any(|(k, v)| k == "COLORTERM" && v == "truecolor"));
+        assert!(env.iter().any(|(k, v)| k == "TERM" && v == "xterm-256color"));
+    }
+
+    #[test]
+    fn test_build_env_vars_config_literal_overrides_default() {
+        let mut config_env = std::collections::HashMap::new();
+        config_env.insert("TERM".into(), "vt100".into());
+        let env = build_env_vars(&config_env);
+        let term_values: Vec<_> = env.iter().filter(|(k, _)| k == "TERM").collect();
+        assert_eq!(term_values.len(), 1);
+        assert_eq!(term_values[0].1, "vt100");
+    }
+
+    #[test]
+    fn test_build_env_vars_config_empty_inherits_from_host() {
+        std::env::set_var("AGENTBOX_TEST_VAR", "from_host");
+        let mut config_env = std::collections::HashMap::new();
+        config_env.insert("AGENTBOX_TEST_VAR".into(), "".into());
+        let env = build_env_vars(&config_env);
+        std::env::remove_var("AGENTBOX_TEST_VAR");
+        assert!(env.iter().any(|(k, v)| k == "AGENTBOX_TEST_VAR" && v == "from_host"));
+    }
+
+    #[test]
+    fn test_build_env_vars_config_empty_no_host_keeps_default() {
+        std::env::remove_var("COLORTERM");
+        let mut config_env = std::collections::HashMap::new();
+        config_env.insert("COLORTERM".into(), "".into());
+        let env = build_env_vars(&config_env);
+        // Empty config with no host var → default survives
+        assert!(env.iter().any(|(k, v)| k == "COLORTERM" && v == "truecolor"));
     }
 }
