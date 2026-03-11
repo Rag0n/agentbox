@@ -1,0 +1,11 @@
+{
+  "planPath": "wiki/2026-03-11-buildkit-recovery.md",
+  "tasks": [
+    {"id": 8, "subject": "Task 1: Add pull parameter to build_args()", "status": "pending"},
+    {"id": 9, "subject": "Task 2: Add pull parameter to build() and update callers", "status": "pending", "blockedBy": [8]},
+    {"id": 10, "subject": "Task 3: Add reset_buildkit() function", "status": "pending", "blockedBy": [9]},
+    {"id": 11, "subject": "Task 4: Add crash detection and retry to build()", "status": "pending", "blockedBy": [10]},
+    {"id": 12, "subject": "Task 5: Final verification", "status": "pending", "blockedBy": [11]}
+  ],
+  "lastUpdated": "2026-03-11T16:30:00Z"
+}
