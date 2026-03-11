@@ -209,6 +209,7 @@ fn main() -> Result<()> {
             let (dockerfile_content, image_tag) =
                 image::resolve_dockerfile(&cwd, cli.profile.as_deref(), &config)?;
             let cache_key = image_tag.replace(':', "-");
+            image::ensure_base_image(&dockerfile_content, cli.verbose)?;
             eprintln!("Building {}...", image_tag);
             image::build(&image_tag, &dockerfile_content, cli.verbose)?;
             image::save_cache(&dockerfile_content, &cache_key, &image::cache_dir())?;
@@ -254,6 +255,7 @@ fn main() -> Result<()> {
                     if image::needs_build(&dockerfile_content, &cache_key, &image::cache_dir()) {
                         eprintln!("Image changed, recreating container...");
                         container::rm(&name, cli.verbose)?;
+                        image::ensure_base_image(&dockerfile_content, cli.verbose)?;
                         image::build(&image_tag, &dockerfile_content, cli.verbose)?;
                         image::save_cache(&dockerfile_content, &cache_key, &image::cache_dir())?;
                         create_and_run(&name, &image_tag, &cwd_str, &config, task_str.as_deref(), cli.verbose)?;
@@ -268,6 +270,7 @@ fn main() -> Result<()> {
                     let cache_key = image_tag.replace(':', "-");
                     if image::needs_build(&dockerfile_content, &cache_key, &image::cache_dir()) {
                         eprintln!("Building image...");
+                        image::ensure_base_image(&dockerfile_content, cli.verbose)?;
                         image::build(&image_tag, &dockerfile_content, cli.verbose)?;
                         image::save_cache(&dockerfile_content, &cache_key, &image::cache_dir())?;
                     }

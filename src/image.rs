@@ -76,6 +76,30 @@ pub fn save_cache(dockerfile_content: &str, cache_key: &str, cache_path: &Path) 
     Ok(())
 }
 
+/// Check if a Dockerfile references `agentbox:default` as a base image.
+fn references_default_base(dockerfile_content: &str) -> bool {
+    dockerfile_content.lines().any(|line| {
+        let trimmed = line.trim().to_lowercase();
+        trimmed == "from agentbox:default"
+            || trimmed.starts_with("from agentbox:default ")
+    })
+}
+
+/// If the Dockerfile uses `FROM agentbox:default`, ensure that base image is built first.
+pub fn ensure_base_image(dockerfile_content: &str, verbose: bool) -> Result<()> {
+    if !references_default_base(dockerfile_content) {
+        return Ok(());
+    }
+
+    let cache_key = "agentbox-default";
+    if needs_build(DEFAULT_DOCKERFILE, cache_key, &cache_dir()) {
+        eprintln!("Building base image agentbox:default...");
+        build("agentbox:default", DEFAULT_DOCKERFILE, verbose)?;
+        save_cache(DEFAULT_DOCKERFILE, cache_key, &cache_dir())?;
+    }
+    Ok(())
+}
+
 /// Build an image using `container build`.
 pub fn build(tag: &str, dockerfile_content: &str, verbose: bool) -> Result<()> {
     let tmp = tempfile::tempdir().context("failed to create temp dir")?;
@@ -163,6 +187,23 @@ mod tests {
     fn test_needs_build_no_cache() {
         let tmp = tempfile::tempdir().unwrap();
         assert!(needs_build("test content", "default", tmp.path()));
+    }
+
+    #[test]
+    fn test_references_default_base() {
+        assert!(references_default_base("FROM agentbox:default"));
+        assert!(references_default_base("FROM agentbox:default\nRUN apt-get update"));
+        assert!(references_default_base("  FROM agentbox:default  "));
+        assert!(references_default_base("FROM agentbox:default AS builder"));
+        assert!(references_default_base("from agentbox:default as base"));
+    }
+
+    #[test]
+    fn test_references_default_base_false() {
+        assert!(!references_default_base("FROM debian:bookworm-slim"));
+        assert!(!references_default_base("FROM agentbox:profile-ruby"));
+        assert!(!references_default_base("# FROM agentbox:default"));
+        assert!(!references_default_base("RUN echo agentbox:default"));
     }
 
     #[test]
