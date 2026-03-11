@@ -35,7 +35,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Remove containers (by name, or current project if none specified)
+    /// Remove containers (by name, current project, or --all)
     Rm {
         /// Container names to remove
         names: Vec<String>,
@@ -43,7 +43,7 @@ enum Commands {
         #[arg(long)]
         all: bool,
     },
-    /// Stop containers (by name, or current project if none specified)
+    /// Stop containers (by name, current project, or --all)
     Stop {
         /// Container names to stop
         names: Vec<String>,
@@ -53,8 +53,12 @@ enum Commands {
     },
     /// List all agentbox containers
     Ls,
-    /// Force rebuild the container image
-    Build,
+    /// Force rebuild the container image (--no-cache for clean build)
+    Build {
+        /// Do not use cache when building the image
+        #[arg(long)]
+        no_cache: bool,
+    },
     /// Configuration management
     Config {
         #[command(subcommand)]
@@ -146,7 +150,10 @@ fn create_and_run(
         let resolved = resolve_volume(spec)?;
         let source = resolved.split(':').next().unwrap_or("");
         if !std::path::Path::new(source).exists() {
-            eprintln!("[agentbox] warning: mount source does not exist: {}", source);
+            eprintln!(
+                "[agentbox] warning: mount source does not exist: {}",
+                source
+            );
         }
         volumes.push(resolved);
     }
@@ -249,7 +256,7 @@ fn main() -> Result<()> {
             container::list(cli.verbose)?;
             Ok(())
         }
-        Some(Commands::Build) => {
+        Some(Commands::Build { no_cache }) => {
             let config = config::Config::load()?;
             let cwd = std::env::current_dir()?;
             let (dockerfile_content, image_tag) =
@@ -257,7 +264,7 @@ fn main() -> Result<()> {
             let cache_key = image_tag.replace(':', "-");
             image::ensure_base_image(&dockerfile_content, cli.verbose)?;
             eprintln!("Building {}...", image_tag);
-            image::build(&image_tag, &dockerfile_content, cli.verbose)?;
+            image::build(&image_tag, &dockerfile_content, no_cache, cli.verbose)?;
             image::save_cache(&dockerfile_content, &cache_key, &image::cache_dir())?;
             println!("Built {}", image_tag);
             Ok(())
@@ -292,7 +299,9 @@ fn main() -> Result<()> {
 
             match container::status(&name)? {
                 container::ContainerStatus::Running => {
-                    container::exec(&name, task_str.as_deref(), cli.verbose)?;
+                    let mut env_vars = build_env_vars(&config.env);
+                    env_vars.extend(git::git_env_vars());
+                    container::exec(&name, task_str.as_deref(), &env_vars, cli.verbose)?;
                 }
                 container::ContainerStatus::Stopped => {
                     let (dockerfile_content, image_tag) =
@@ -302,12 +311,22 @@ fn main() -> Result<()> {
                         eprintln!("Image changed, recreating container...");
                         container::rm(&name, cli.verbose)?;
                         image::ensure_base_image(&dockerfile_content, cli.verbose)?;
-                        image::build(&image_tag, &dockerfile_content, cli.verbose)?;
+                        image::build(&image_tag, &dockerfile_content, false, cli.verbose)?;
                         image::save_cache(&dockerfile_content, &cache_key, &image::cache_dir())?;
-                        create_and_run(&name, &image_tag, &cwd_str, &config, task_str.as_deref(), cli.verbose, &cli.mount)?;
+                        create_and_run(
+                            &name,
+                            &image_tag,
+                            &cwd_str,
+                            &config,
+                            task_str.as_deref(),
+                            cli.verbose,
+                            &cli.mount,
+                        )?;
                     } else {
                         container::start(&name, cli.verbose)?;
-                        container::exec(&name, task_str.as_deref(), cli.verbose)?;
+                        let mut env_vars = build_env_vars(&config.env);
+                        env_vars.extend(git::git_env_vars());
+                        container::exec(&name, task_str.as_deref(), &env_vars, cli.verbose)?;
                     }
                 }
                 container::ContainerStatus::NotFound => {
@@ -317,10 +336,18 @@ fn main() -> Result<()> {
                     if image::needs_build(&dockerfile_content, &cache_key, &image::cache_dir()) {
                         eprintln!("Building image...");
                         image::ensure_base_image(&dockerfile_content, cli.verbose)?;
-                        image::build(&image_tag, &dockerfile_content, cli.verbose)?;
+                        image::build(&image_tag, &dockerfile_content, false, cli.verbose)?;
                         image::save_cache(&dockerfile_content, &cache_key, &image::cache_dir())?;
                     }
-                    create_and_run(&name, &image_tag, &cwd_str, &config, task_str.as_deref(), cli.verbose, &cli.mount)?;
+                    create_and_run(
+                        &name,
+                        &image_tag,
+                        &cwd_str,
+                        &config,
+                        task_str.as_deref(),
+                        cli.verbose,
+                        &cli.mount,
+                    )?;
                 }
             }
             Ok(())
@@ -349,12 +376,20 @@ mod tests {
     #[test]
     fn test_rm_subcommand_no_args() {
         let cli = Cli::try_parse_from(["agentbox", "rm"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Rm { ref names, all }) if names.is_empty() && !all));
+        assert!(
+            matches!(cli.command, Some(Commands::Rm { ref names, all }) if names.is_empty() && !all)
+        );
     }
 
     #[test]
     fn test_rm_subcommand_with_names() {
-        let cli = Cli::try_parse_from(["agentbox", "rm", "agentbox-foo-abc123", "agentbox-bar-def456"]).unwrap();
+        let cli = Cli::try_parse_from([
+            "agentbox",
+            "rm",
+            "agentbox-foo-abc123",
+            "agentbox-bar-def456",
+        ])
+        .unwrap();
         match cli.command {
             Some(Commands::Rm { names, all }) => {
                 assert_eq!(names, vec!["agentbox-foo-abc123", "agentbox-bar-def456"]);
@@ -367,7 +402,9 @@ mod tests {
     #[test]
     fn test_rm_subcommand_all() {
         let cli = Cli::try_parse_from(["agentbox", "rm", "--all"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Rm { ref names, all }) if names.is_empty() && all));
+        assert!(
+            matches!(cli.command, Some(Commands::Rm { ref names, all }) if names.is_empty() && all)
+        );
     }
 
     #[test]
@@ -379,12 +416,20 @@ mod tests {
     #[test]
     fn test_stop_subcommand_no_args() {
         let cli = Cli::try_parse_from(["agentbox", "stop"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Stop { ref names, all }) if names.is_empty() && !all));
+        assert!(
+            matches!(cli.command, Some(Commands::Stop { ref names, all }) if names.is_empty() && !all)
+        );
     }
 
     #[test]
     fn test_stop_subcommand_with_names() {
-        let cli = Cli::try_parse_from(["agentbox", "stop", "agentbox-foo-abc123", "agentbox-bar-def456"]).unwrap();
+        let cli = Cli::try_parse_from([
+            "agentbox",
+            "stop",
+            "agentbox-foo-abc123",
+            "agentbox-bar-def456",
+        ])
+        .unwrap();
         match cli.command {
             Some(Commands::Stop { names, all }) => {
                 assert_eq!(names, vec!["agentbox-foo-abc123", "agentbox-bar-def456"]);
@@ -397,13 +442,27 @@ mod tests {
     #[test]
     fn test_stop_subcommand_all() {
         let cli = Cli::try_parse_from(["agentbox", "stop", "--all"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Stop { ref names, all }) if names.is_empty() && all));
+        assert!(
+            matches!(cli.command, Some(Commands::Stop { ref names, all }) if names.is_empty() && all)
+        );
     }
 
     #[test]
     fn test_build_subcommand() {
         let cli = Cli::try_parse_from(["agentbox", "build"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Build)));
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Build { no_cache: false })
+        ));
+    }
+
+    #[test]
+    fn test_build_subcommand_no_cache() {
+        let cli = Cli::try_parse_from(["agentbox", "build", "--no-cache"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Build { no_cache: true })
+        ));
     }
 
     #[test]
@@ -411,7 +470,9 @@ mod tests {
         let cli = Cli::try_parse_from(["agentbox", "config", "init"]).unwrap();
         assert!(matches!(
             cli.command,
-            Some(Commands::Config { command: ConfigCommands::Init })
+            Some(Commands::Config {
+                command: ConfigCommands::Init
+            })
         ));
     }
 
@@ -430,8 +491,12 @@ mod tests {
     #[test]
     fn test_build_env_vars_defaults() {
         let env = build_env_vars(&std::collections::HashMap::new());
-        assert!(env.iter().any(|(k, v)| k == "COLORTERM" && v == "truecolor"));
-        assert!(env.iter().any(|(k, v)| k == "TERM" && v == "xterm-256color"));
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "COLORTERM" && v == "truecolor"));
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "TERM" && v == "xterm-256color"));
     }
 
     #[test]
@@ -451,7 +516,9 @@ mod tests {
         config_env.insert("AGENTBOX_TEST_VAR".into(), "".into());
         let env = build_env_vars(&config_env);
         std::env::remove_var("AGENTBOX_TEST_VAR");
-        assert!(env.iter().any(|(k, v)| k == "AGENTBOX_TEST_VAR" && v == "from_host"));
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "AGENTBOX_TEST_VAR" && v == "from_host"));
     }
 
     #[test]
@@ -461,7 +528,9 @@ mod tests {
         config_env.insert("COLORTERM".into(), "".into());
         let env = build_env_vars(&config_env);
         // Empty config with no host var → default survives
-        assert!(env.iter().any(|(k, v)| k == "COLORTERM" && v == "truecolor"));
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "COLORTERM" && v == "truecolor"));
     }
 
     #[test]
@@ -474,9 +543,12 @@ mod tests {
     fn test_mount_flag_multiple() {
         let cli = Cli::try_parse_from([
             "agentbox",
-            "--mount", "~/.config/foo",
-            "--mount", "/other/path",
-        ]).unwrap();
+            "--mount",
+            "~/.config/foo",
+            "--mount",
+            "/other/path",
+        ])
+        .unwrap();
         assert_eq!(cli.mount.len(), 2);
     }
 
@@ -500,7 +572,10 @@ mod tests {
     #[test]
     fn test_resolve_volume_absolute_path() {
         let resolved = resolve_volume("/Users/alex/Dev/marketplace").unwrap();
-        assert_eq!(resolved, "/Users/alex/Dev/marketplace:/Users/alex/Dev/marketplace");
+        assert_eq!(
+            resolved,
+            "/Users/alex/Dev/marketplace:/Users/alex/Dev/marketplace"
+        );
     }
 
     #[test]
