@@ -81,7 +81,7 @@ impl Config {
 # ]
 
 # Override the default Dockerfile for all projects
-# dockerfile = "/path/to/my-default.Dockerfile"
+# dockerfile = "~/.config/agentbox/Dockerfile.custom"
 
 # Environment variables to pass into container
 # [env]
