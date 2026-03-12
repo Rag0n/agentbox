@@ -21,7 +21,7 @@ struct Cli {
     #[arg(long)]
     profile: Option<String>,
 
-    /// Print container commands being executed
+    /// Show container commands and build output
     #[arg(long)]
     verbose: bool,
 

@@ -200,7 +200,9 @@ pub fn build(tag: &str, dockerfile_content: &str, no_cache: bool, pull: bool, ve
     let mut captured_stderr = String::new();
 
     for line in reader.lines().flatten() {
-        eprintln!("{}", line);
+        if verbose {
+            eprintln!("{}", line);
+        }
         captured_stderr.push_str(&line);
         captured_stderr.push('\n');
     }
