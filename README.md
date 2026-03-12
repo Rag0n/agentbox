@@ -179,6 +179,28 @@ Three path formats are supported:
 | Absolute path | `/some/path` | Same path in container |
 | Explicit mapping | `/source:/dest` | Custom source → dest |
 
+## Sharing Screenshots
+
+macOS clipboard lives in memory and isn't directly accessible from inside the container. However, screenshot tools save files to disk, and you can mount those directories so Claude can see pasted/dragged images.
+
+Use absolute paths (not `~/`) so the mount path inside the container matches the host path that the terminal sends:
+
+```toml
+# ~/.config/agentbox/config.toml
+volumes = [
+  # CleanShot X media (adjust path for your screenshot tool)
+  "/Users/YOUR_USERNAME/Library/Application Support/CleanShot/media",
+  # Clop optimized images (if you use Clop)
+  "/Users/YOUR_USERNAME/Library/Caches/Clop/images",
+]
+```
+
+After adding these volumes, restart your container (`agentbox rm && agentbox`) and drag-and-drop or paste screenshots as usual.
+
+> **Why absolute paths?** The `~/` prefix maps to `/home/user/` inside the container, but your terminal sends the real host path (`/Users/you/Library/...`). Using absolute paths ensures both sides match.
+
+> **Note:** The standard macOS screenshot tool (`Cmd+Shift+3/4`) saves to Desktop by default. If your Desktop isn't already mounted, add `/Users/YOUR_USERNAME/Desktop` to your volumes. Clipboard-only copies (`Cmd+Shift+Ctrl+3/4`) create no file on disk — use `Cmd+Shift+3/4` (without Ctrl) instead.
+
 ## What's Isolated
 
 Claude **cannot** access `~/.ssh`, `~/.aws`, `~/.gnupg`, or any other host directory.
