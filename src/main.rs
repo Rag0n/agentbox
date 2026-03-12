@@ -137,8 +137,14 @@ fn create_and_run(
 
     let mut volumes = vec![
         format!("{}:{}", workdir, workdir),
-        format!("{}:/home/user/.claude", home.join(".claude").display()),
+        format!("{}:/home/user/.claude", claude_dir.display()),
     ];
+
+    // Also mount at the host path so absolute paths in plugin configs resolve correctly
+    let home_str = home.to_string_lossy();
+    if home_str != "/home/user" {
+        volumes.push(format!("{}:{}", claude_dir.display(), claude_dir.display()));
+    }
 
     // Seed container with host's .claude.json (read-only to avoid conflicts)
     let claude_json = home.join(".claude.json");
