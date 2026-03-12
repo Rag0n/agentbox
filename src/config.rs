@@ -75,9 +75,9 @@ impl Config {
 
 # Additional volumes to mount into containers
 # volumes = [
-#   "~/.config/worktrunk",              # tilde = home-relative mapping
-#   "/opt/shared-libs",                  # absolute = same path in container
-#   "/source/path:/dest/path",          # explicit source:dest mapping
+#   "~/.config/tool",            # tilde = home-relative mapping
+#   "/opt/libs",                 # absolute = same path in container
+#   "/src/path:/dest/path",     # explicit source:dest mapping
 # ]
 
 # Override the default Dockerfile for all projects
@@ -85,12 +85,12 @@ impl Config {
 
 # Environment variables to pass into container
 # [env]
-# GH_TOKEN = ""           # empty = inherit from host env
-# LINEAR_API_KEY = "abc"  # literal value
+# KEY = ""        # empty = inherit from host env
+# KEY = "value"   # literal value
 
 # Named profiles with custom Dockerfiles
-# [profiles.mystack]
-# dockerfile = "/path/to/mystack.Dockerfile"
+# [profiles.name]
+# dockerfile = "/path/to/Dockerfile"
 "#
     }
 }
