@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use crate::config::Config;
 
@@ -146,7 +148,23 @@ fn build_args(
     args
 }
 
+/// Reset the buildkit builder after a crash.
+/// Uses `container builder` commands (more reliable than stopping the buildkit container directly).
+/// See: https://github.com/apple/container/issues/284
+fn reset_buildkit(verbose: bool) {
+    if verbose {
+        eprintln!("[agentbox] resetting buildkit...");
+    }
+    let _ = Command::new("container")
+        .args(["builder", "stop", "--force"])
+        .output();
+    let _ = Command::new("container")
+        .args(["builder", "delete"])
+        .output();
+}
+
 /// Build an image using `container build`.
+/// Automatically detects and recovers from buildkit crashes by resetting and retrying once.
 pub fn build(tag: &str, dockerfile_content: &str, no_cache: bool, pull: bool, verbose: bool) -> Result<()> {
     let tmp = tempfile::tempdir().context("failed to create temp dir")?;
     let df_path = tmp.path().join("Dockerfile");
@@ -168,18 +186,51 @@ pub fn build(tag: &str, dockerfile_content: &str, no_cache: bool, pull: bool, ve
         eprintln!("[agentbox] container {}", args.join(" "));
     }
 
-    let status = std::process::Command::new("container")
+    // Pipe stderr so we can detect buildkit crashes while still showing output in real-time.
+    let mut child = Command::new("container")
         .args(&args)
-        .stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .status()
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::piped())
+        .spawn()
         .context("failed to run 'container build'")?;
 
-    if !status.success() {
-        anyhow::bail!("container build failed");
+    let stderr_pipe = child.stderr.take().unwrap();
+    let reader = BufReader::new(stderr_pipe);
+    let mut captured_stderr = String::new();
+
+    for line in reader.lines().flatten() {
+        eprintln!("{}", line);
+        captured_stderr.push_str(&line);
+        captured_stderr.push('\n');
     }
-    Ok(())
+
+    let status = child.wait().context("failed to wait for 'container build'")?;
+
+    if status.success() {
+        return Ok(());
+    }
+
+    // Detect buildkit crash (Apple Container framework bug) and auto-recover.
+    if captured_stderr.contains("Negative count not allowed") {
+        eprintln!("Detected buildkit crash, resetting builder and retrying...");
+        reset_buildkit(verbose);
+
+        let retry_status = Command::new("container")
+            .args(&args)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .context("failed to run 'container build' (retry)")?;
+
+        if retry_status.success() {
+            return Ok(());
+        }
+        anyhow::bail!("container build failed after buildkit reset");
+    }
+
+    anyhow::bail!("container build failed");
 }
 
 #[cfg(test)]
