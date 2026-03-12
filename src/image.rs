@@ -126,10 +126,11 @@ fn build_args(
     dockerfile_path: &str,
     context_path: &str,
     no_cache: bool,
+    pull: bool,
 ) -> Vec<String> {
     let mut args = vec!["build".to_string()];
-    // Only --pull when the base image is remote; skip for local agentbox:default.
-    if !references_default_base(dockerfile_content) {
+    // --pull only when explicitly requested AND base image is remote.
+    if pull && !references_default_base(dockerfile_content) {
         args.push("--pull".into());
     }
     args.extend([
@@ -266,36 +267,52 @@ mod tests {
     }
 
     #[test]
-    fn test_build_args_pull_for_remote_base() {
+    fn test_build_args_pull_when_requested() {
         let args = build_args(
             "agentbox:default",
             "FROM debian:bookworm-slim\nRUN echo hi",
             "/tmp/Dockerfile",
             "/tmp",
             false,
+            true, // pull
         );
         assert!(args.contains(&"--pull".to_string()));
     }
 
     #[test]
-    fn test_build_args_no_pull_for_local_base() {
+    fn test_build_args_no_pull_when_not_requested() {
+        let args = build_args(
+            "agentbox:default",
+            "FROM debian:bookworm-slim\nRUN echo hi",
+            "/tmp/Dockerfile",
+            "/tmp",
+            false,
+            false, // no pull
+        );
+        assert!(!args.contains(&"--pull".to_string()));
+    }
+
+    #[test]
+    fn test_build_args_no_pull_for_local_base_even_when_requested() {
         let args = build_args(
             "agentbox:project-myapp",
             "FROM agentbox:default\nRUN apt-get install -y nodejs",
             "/tmp/Dockerfile",
             "/tmp",
             false,
+            true, // pull requested, but local base overrides
         );
         assert!(!args.contains(&"--pull".to_string()));
     }
 
     #[test]
-    fn test_build_args_no_cache_flag() {
+    fn test_build_args_no_cache_with_pull() {
         let args = build_args(
             "agentbox:default",
             "FROM debian:bookworm-slim",
             "/tmp/Dockerfile",
             "/tmp",
+            true,
             true,
         );
         assert!(args.contains(&"--no-cache".to_string()));
