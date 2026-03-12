@@ -113,7 +113,7 @@ pub fn ensure_base_image(dockerfile_content: &str, verbose: bool) -> Result<()> 
     let cache_key = "agentbox-default";
     if needs_build(DEFAULT_DOCKERFILE, cache_key, &cache_dir()) {
         eprintln!("Building base image agentbox:default...");
-        build("agentbox:default", DEFAULT_DOCKERFILE, false, verbose)?;
+        build("agentbox:default", DEFAULT_DOCKERFILE, false, false, verbose)?;
         save_cache(DEFAULT_DOCKERFILE, cache_key, &cache_dir())?;
     }
     Ok(())
@@ -147,7 +147,7 @@ fn build_args(
 }
 
 /// Build an image using `container build`.
-pub fn build(tag: &str, dockerfile_content: &str, no_cache: bool, verbose: bool) -> Result<()> {
+pub fn build(tag: &str, dockerfile_content: &str, no_cache: bool, pull: bool, verbose: bool) -> Result<()> {
     let tmp = tempfile::tempdir().context("failed to create temp dir")?;
     let df_path = tmp.path().join("Dockerfile");
     std::fs::write(&df_path, dockerfile_content)?;
@@ -161,6 +161,7 @@ pub fn build(tag: &str, dockerfile_content: &str, no_cache: bool, verbose: bool)
         &df_path.to_string_lossy(),
         &tmp.path().to_string_lossy(),
         no_cache,
+        pull,
     );
 
     if verbose {
