@@ -155,17 +155,30 @@ fn create_and_run(
         ));
     }
 
-    // Append config volumes + CLI mounts
+    // Collect existing destination paths for deduplication
+    let mut seen_dests: std::collections::HashSet<String> = volumes
+        .iter()
+        .filter_map(|v| {
+            let parts: Vec<&str> = v.splitn(3, ':').collect();
+            parts.get(1).map(|s| s.to_string())
+        })
+        .collect();
+
+    // Append config volumes + CLI mounts, skipping duplicates
     for spec in config.volumes.iter().chain(extra_volumes.iter()) {
         let resolved = resolve_volume(spec)?;
-        let source = resolved.split(':').next().unwrap_or("");
+        let parts: Vec<&str> = resolved.splitn(3, ':').collect();
+        let source = parts.first().unwrap_or(&"");
+        let dest = parts.get(1).unwrap_or(&"");
         if !std::path::Path::new(source).exists() {
             eprintln!(
                 "[agentbox] warning: mount source does not exist: {}",
                 source
             );
         }
-        volumes.push(resolved);
+        if seen_dests.insert(dest.to_string()) {
+            volumes.push(resolved);
+        }
     }
 
     let opts = container::RunOpts {
@@ -600,5 +613,40 @@ mod tests {
         let resolved = resolve_volume("~/mydir").unwrap();
         let expected = format!("{}:/home/user/mydir", home.join("mydir").display());
         assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn test_volume_deduplication() {
+        // Simulate the dedup logic: CWD volume already present, config adds same path
+        let workdir = "/Users/alex/Dev/marketplace";
+        let mut volumes = vec![format!("{}:{}", workdir, workdir)];
+
+        let mut seen_dests: std::collections::HashSet<String> = volumes
+            .iter()
+            .filter_map(|v| {
+                let parts: Vec<&str> = v.splitn(3, ':').collect();
+                parts.get(1).map(|s| s.to_string())
+            })
+            .collect();
+
+        // This should be skipped (same dest as CWD)
+        let resolved = resolve_volume(workdir).unwrap();
+        let parts: Vec<&str> = resolved.splitn(3, ':').collect();
+        let dest = parts.get(1).unwrap_or(&"");
+        if seen_dests.insert(dest.to_string()) {
+            volumes.push(resolved);
+        }
+
+        // This should be added (different dest)
+        let resolved2 = resolve_volume("/other/path").unwrap();
+        let parts2: Vec<&str> = resolved2.splitn(3, ':').collect();
+        let dest2 = parts2.get(1).unwrap_or(&"");
+        if seen_dests.insert(dest2.to_string()) {
+            volumes.push(resolved2);
+        }
+
+        assert_eq!(volumes.len(), 2); // CWD + /other/path, not 3
+        assert_eq!(volumes[0], format!("{}:{}", workdir, workdir));
+        assert_eq!(volumes[1], "/other/path:/other/path");
     }
 }
