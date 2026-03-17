@@ -198,12 +198,21 @@ fn create_and_run(
 
 fn check_prerequisites() -> Result<()> {
     let output = std::process::Command::new("container")
-        .args(["system", "version"])
+        .args(["system", "status"])
         .output();
 
     match output {
-        Ok(o) if o.status.success() => return Ok(()),
-        Ok(_) => {} // command found but system not running – try starting below
+        Ok(o) => {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            let is_running = stdout.lines().any(|line| {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                parts.len() == 2 && parts[0] == "status" && parts[1] == "running"
+            });
+            if is_running {
+                return Ok(());
+            }
+            // command found but system not running – try starting below
+        }
         Err(_) => {
             anyhow::bail!(
                 "Apple Container CLI is not installed.\n\n\
