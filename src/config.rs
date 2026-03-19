@@ -3,6 +3,14 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+pub struct BridgeConfig {
+    pub allowed_commands: Vec<String>,
+    pub forward_not_found: bool,
+    pub host_ip: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -15,6 +23,8 @@ pub struct Config {
     pub profiles: HashMap<String, Profile>,
     #[serde(default)]
     pub volumes: Vec<String>,
+    #[serde(default)]
+    pub bridge: BridgeConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -31,6 +41,7 @@ impl Default for Config {
             env: HashMap::new(),
             profiles: HashMap::new(),
             volumes: Vec::new(),
+            bridge: BridgeConfig::default(),
         }
     }
 }
@@ -91,6 +102,11 @@ impl Config {
 # Named profiles with custom Dockerfiles
 # [profiles.name]
 # dockerfile = "/path/to/Dockerfile"
+
+# Host bridge: execute commands on macOS host from container
+# [bridge]
+# allowed_commands = ["xcodebuild", "xcrun", "adb", "emulator"]
+# forward_not_found = false
 "#
     }
 }
@@ -189,5 +205,46 @@ mod tests {
         assert!(content.contains("# [env]"));
         assert!(content.contains("# [profiles."));
         assert!(content.contains("# volumes"));
+    }
+
+    #[test]
+    fn test_parse_bridge_config() {
+        let toml_str = r#"
+            [bridge]
+            allowed_commands = ["xcodebuild", "xcrun", "adb"]
+            forward_not_found = true
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.bridge.allowed_commands,
+            vec!["xcodebuild", "xcrun", "adb"]
+        );
+        assert!(config.bridge.forward_not_found);
+    }
+
+    #[test]
+    fn test_default_bridge_config() {
+        let config = Config::default();
+        assert!(config.bridge.allowed_commands.is_empty());
+        assert!(!config.bridge.forward_not_found);
+    }
+
+    #[test]
+    fn test_bridge_config_omitted() {
+        let config: Config = toml::from_str("").unwrap();
+        assert!(config.bridge.allowed_commands.is_empty());
+        assert!(!config.bridge.forward_not_found);
+        assert!(config.bridge.host_ip.is_none());
+    }
+
+    #[test]
+    fn test_bridge_config_host_ip_override() {
+        let toml_str = r#"
+            [bridge]
+            allowed_commands = ["echo"]
+            host_ip = "10.0.0.1"
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.bridge.host_ip, Some("10.0.0.1".to_string()));
     }
 }

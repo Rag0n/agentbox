@@ -15,3 +15,8 @@ num_cpus = "1.17"
 anyhow = "1.0"
 dirs = "6.0"
 tempfile = "3.14"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "io-std", "process", "signal", "sync", "macros", "time"] }
+tokio-tungstenite = "0.24"
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+rand = "0.8"
+libc = "0.2"
