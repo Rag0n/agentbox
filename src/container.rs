@@ -163,7 +163,29 @@ fn build_exec_args(name: &str, task: Option<&str>, env_vars: &[(String, String)]
     // Use login shell so PATH includes ~/.local/bin where claude is installed
     args.push("bash".into());
     args.extend(["-lc".into()]);
-    let mut cmd = "claude --dangerously-skip-permissions".to_string();
+
+    let mut cmd = String::new();
+    // Set up hostexec symlinks if bridge env vars are present (exec bypasses entrypoint)
+    if env_vars.iter().any(|(k, _)| k == "HOSTEXEC_COMMANDS") {
+        cmd.push_str(
+            "if [ -n \"$HOSTEXEC_COMMANDS\" ]; then \
+             mkdir -p ~/.local/bin; \
+             for c in $HOSTEXEC_COMMANDS; do \
+             ln -sf /usr/local/bin/hostexec ~/.local/bin/$c; \
+             done; fi; ",
+        );
+    }
+    if env_vars
+        .iter()
+        .any(|(k, v)| k == "HOSTEXEC_FORWARD_NOT_FOUND" && v == "true")
+    {
+        cmd.push_str(
+            "if ! grep -q command_not_found_handle /etc/bash.bashrc 2>/dev/null; then \
+             echo 'command_not_found_handle() { /usr/local/bin/hostexec \"$@\"; }' \
+             | sudo tee -a /etc/bash.bashrc > /dev/null; fi; ",
+        );
+    }
+    cmd.push_str("claude --dangerously-skip-permissions");
     if let Some(t) = task {
         cmd.push_str(&format!(" -p '{}'", t.replace('\'', "'\\''")));
     }
@@ -419,6 +441,43 @@ mod tests {
         assert!(args.contains(&"--tty".to_string()));
         // No -p flag in command string when no task
         let cmd = args.last().unwrap();
+        assert_eq!(cmd, "claude --dangerously-skip-permissions");
+    }
+
+    #[test]
+    fn test_exec_args_with_hostexec_env() {
+        let env_vars = vec![
+            ("HOSTEXEC_HOST".to_string(), "192.168.64.1".to_string()),
+            ("HOSTEXEC_PORT".to_string(), "12345".to_string()),
+            ("HOSTEXEC_TOKEN".to_string(), "tok".to_string()),
+            ("HOSTEXEC_COMMANDS".to_string(), "xcodebuild xcrun".to_string()),
+        ];
+        let args = build_exec_args("mycontainer", None, &env_vars);
+        let cmd = args.last().unwrap();
+        assert!(cmd.contains("HOSTEXEC_COMMANDS"), "should set up symlinks");
+        assert!(cmd.contains("ln -sf /usr/local/bin/hostexec"));
+        assert!(cmd.contains("claude --dangerously-skip-permissions"));
+    }
+
+    #[test]
+    fn test_exec_args_with_forward_not_found() {
+        let env_vars = vec![
+            ("HOSTEXEC_COMMANDS".to_string(), "xcodebuild".to_string()),
+            (
+                "HOSTEXEC_FORWARD_NOT_FOUND".to_string(),
+                "true".to_string(),
+            ),
+        ];
+        let args = build_exec_args("mycontainer", None, &env_vars);
+        let cmd = args.last().unwrap();
+        assert!(cmd.contains("command_not_found_handle"));
+    }
+
+    #[test]
+    fn test_exec_args_no_hostexec_without_env() {
+        let args = build_exec_args("mycontainer", None, &[]);
+        let cmd = args.last().unwrap();
+        assert!(!cmd.contains("HOSTEXEC"), "no bridge setup without env vars");
         assert_eq!(cmd, "claude --dangerously-skip-permissions");
     }
 

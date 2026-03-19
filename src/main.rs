@@ -1,9 +1,11 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
+mod bridge;
 mod config;
 mod container;
 mod git;
+mod hostexec;
 mod image;
 
 #[derive(Parser)]
@@ -113,6 +115,7 @@ fn resolve_volume(spec: &str) -> Result<String> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_and_run(
     name: &str,
     image_tag: &str,
@@ -121,13 +124,11 @@ fn create_and_run(
     task: Option<&str>,
     verbose: bool,
     extra_volumes: &[String],
+    bridge_handle: Option<&bridge::BridgeHandle>,
 ) -> Result<()> {
     let home = dirs::home_dir().context("cannot determine home directory")?;
 
-    let mut env_vars = build_env_vars(&config.env);
-
-    // Git identity
-    env_vars.extend(git::git_env_vars());
+    let env_vars = build_all_env_vars(config, bridge_handle);
 
     // Ensure ~/.claude exists on host before mounting
     let claude_dir = home.join(".claude");
@@ -239,7 +240,57 @@ fn check_prerequisites() -> Result<()> {
     Ok(())
 }
 
+/// Detect the host IP that containers can reach.
+/// Apple Containers use 192.168.64.1 as the default gateway.
+fn detect_host_ip(config: &config::BridgeConfig) -> String {
+    config
+        .host_ip
+        .clone()
+        .unwrap_or_else(|| "192.168.64.1".to_string())
+}
+
+fn build_all_env_vars(
+    config: &config::Config,
+    bridge_handle: Option<&bridge::BridgeHandle>,
+) -> Vec<(String, String)> {
+    let mut env_vars = build_env_vars(&config.env);
+    env_vars.extend(git::git_env_vars());
+    if let Some(handle) = bridge_handle {
+        env_vars.push(("HOSTEXEC_HOST".into(), detect_host_ip(&config.bridge)));
+        env_vars.push(("HOSTEXEC_PORT".into(), handle.port.to_string()));
+        env_vars.push(("HOSTEXEC_TOKEN".into(), handle.token.clone()));
+        env_vars.push((
+            "HOSTEXEC_COMMANDS".into(),
+            handle.commands_env(&config.bridge),
+        ));
+        if config.bridge.forward_not_found {
+            env_vars.push(("HOSTEXEC_FORWARD_NOT_FOUND".into(), "true".into()));
+        }
+    }
+    env_vars
+}
+
 fn main() -> Result<()> {
+    // Check if we're invoked as hostexec (symlink mode)
+    let binary_name = std::env::args()
+        .next()
+        .and_then(|a| {
+            std::path::Path::new(&a)
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+        })
+        .unwrap_or_default();
+
+    if binary_name == "hostexec" {
+        std::process::exit(hostexec::run(None));
+    } else if binary_name != "agentbox" && !binary_name.is_empty() {
+        // Invoked via a symlink like "xcodebuild" -> hostexec
+        // But only if HOSTEXEC_HOST is set (we're in a container)
+        if std::env::var("HOSTEXEC_HOST").is_ok() {
+            std::process::exit(hostexec::run(Some(binary_name)));
+        }
+    }
+
     check_prerequisites()?;
     let cli = Cli::parse();
 
@@ -294,7 +345,7 @@ fn main() -> Result<()> {
             let (dockerfile_content, image_tag) =
                 image::resolve_dockerfile(&cwd, cli.profile.as_deref(), &config)?;
             let cache_key = image_tag.replace(':', "-");
-            image::ensure_base_image(&dockerfile_content, cli.verbose)?;
+            image::ensure_base_image(&dockerfile_content, no_cache, cli.verbose)?;
             eprintln!("Building {}...", image_tag);
             image::build(&image_tag, &dockerfile_content, no_cache, true, cli.verbose)?;
             image::save_cache(&dockerfile_content, &cache_key, &image::cache_dir())?;
@@ -329,10 +380,29 @@ fn main() -> Result<()> {
                 Some(cli.task.join(" "))
             };
 
+            // Start bridge if configured
+            let _bridge_handle = if !config.bridge.allowed_commands.is_empty() {
+                match bridge::start_bridge(&config.bridge, &cwd_str) {
+                    Ok(handle) => {
+                        eprintln!(
+                            "[agentbox] bridge started on port {} ({} commands allowed)",
+                            handle.port,
+                            config.bridge.allowed_commands.len()
+                        );
+                        Some(handle)
+                    }
+                    Err(e) => {
+                        eprintln!("[agentbox] warning: bridge failed to start: {}", e);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
             match container::status(&name)? {
                 container::ContainerStatus::Running => {
-                    let mut env_vars = build_env_vars(&config.env);
-                    env_vars.extend(git::git_env_vars());
+                    let env_vars = build_all_env_vars(&config, _bridge_handle.as_ref());
                     container::exec(&name, task_str.as_deref(), &env_vars, cli.verbose)?;
                 }
                 container::ContainerStatus::Stopped => {
@@ -342,7 +412,7 @@ fn main() -> Result<()> {
                     if image::needs_build(&dockerfile_content, &cache_key, &image::cache_dir()) {
                         eprintln!("Image changed, recreating container...");
                         container::rm(&name, cli.verbose)?;
-                        image::ensure_base_image(&dockerfile_content, cli.verbose)?;
+                        image::ensure_base_image(&dockerfile_content, false, cli.verbose)?;
                         image::build(&image_tag, &dockerfile_content, false, false, cli.verbose)?;
                         image::save_cache(&dockerfile_content, &cache_key, &image::cache_dir())?;
                         create_and_run(
@@ -353,11 +423,11 @@ fn main() -> Result<()> {
                             task_str.as_deref(),
                             cli.verbose,
                             &cli.mount,
+                            _bridge_handle.as_ref(),
                         )?;
                     } else {
                         container::start(&name, cli.verbose)?;
-                        let mut env_vars = build_env_vars(&config.env);
-                        env_vars.extend(git::git_env_vars());
+                        let env_vars = build_all_env_vars(&config, _bridge_handle.as_ref());
                         container::exec(&name, task_str.as_deref(), &env_vars, cli.verbose)?;
                     }
                 }
@@ -367,7 +437,7 @@ fn main() -> Result<()> {
                     let cache_key = image_tag.replace(':', "-");
                     if image::needs_build(&dockerfile_content, &cache_key, &image::cache_dir()) {
                         eprintln!("Building image...");
-                        image::ensure_base_image(&dockerfile_content, cli.verbose)?;
+                        image::ensure_base_image(&dockerfile_content, false, cli.verbose)?;
                         image::build(&image_tag, &dockerfile_content, false, false, cli.verbose)?;
                         image::save_cache(&dockerfile_content, &cache_key, &image::cache_dir())?;
                     }
@@ -379,6 +449,7 @@ fn main() -> Result<()> {
                         task_str.as_deref(),
                         cli.verbose,
                         &cli.mount,
+                        _bridge_handle.as_ref(),
                     )?;
                 }
             }
