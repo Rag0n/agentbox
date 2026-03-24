@@ -270,6 +270,17 @@ fn build_all_env_vars(
     env_vars
 }
 
+/// Suppress SIGHUP and SIGTERM so the process survives long enough
+/// to run cleanup after the child container process exits.
+/// The child process (container exec/run) still receives these signals
+/// via the process group and exits normally.
+fn install_signal_handlers() {
+    unsafe {
+        libc::signal(libc::SIGHUP, libc::SIG_IGN);
+        libc::signal(libc::SIGTERM, libc::SIG_IGN);
+    }
+}
+
 fn main() -> Result<()> {
     // Check if we're invoked as hostexec (symlink mode)
     let binary_name = std::env::args()
@@ -400,10 +411,13 @@ fn main() -> Result<()> {
                 None
             };
 
-            match container::status(&name)? {
+            // Suppress SIGHUP/SIGTERM so we survive long enough for cleanup
+            install_signal_handlers();
+
+            let result = match container::status(&name)? {
                 container::ContainerStatus::Running => {
                     let env_vars = build_all_env_vars(&config, _bridge_handle.as_ref());
-                    container::exec(&name, task_str.as_deref(), &env_vars, cli.verbose)?;
+                    container::exec(&name, task_str.as_deref(), &env_vars, cli.verbose)
                 }
                 container::ContainerStatus::Stopped => {
                     let (dockerfile_content, image_tag) =
@@ -424,11 +438,11 @@ fn main() -> Result<()> {
                             cli.verbose,
                             &cli.mount,
                             _bridge_handle.as_ref(),
-                        )?;
+                        )
                     } else {
                         container::start(&name, cli.verbose)?;
                         let env_vars = build_all_env_vars(&config, _bridge_handle.as_ref());
-                        container::exec(&name, task_str.as_deref(), &env_vars, cli.verbose)?;
+                        container::exec(&name, task_str.as_deref(), &env_vars, cli.verbose)
                     }
                 }
                 container::ContainerStatus::NotFound => {
@@ -450,10 +464,14 @@ fn main() -> Result<()> {
                         cli.verbose,
                         &cli.mount,
                         _bridge_handle.as_ref(),
-                    )?;
+                    )
                 }
-            }
-            Ok(())
+            };
+
+            // Auto-stop container if we're the last session
+            container::maybe_stop_container(&name);
+
+            result
         }
     }
 }

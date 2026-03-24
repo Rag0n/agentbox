@@ -108,6 +108,52 @@ fn parse_status(json: &serde_json::Value) -> ContainerStatus {
     }
 }
 
+/// Check if other processes are using the same container.
+/// Parses `ps -eo pid,args` output, looking for `container` processes
+/// that reference the given container name, excluding our own PID.
+pub fn has_other_sessions(ps_output: &str, container_name: &str, our_pid: u32) -> bool {
+    ps_output.lines().any(|line| {
+        let trimmed = line.trim();
+        let (pid_str, args) = match trimmed.split_once(char::is_whitespace) {
+            Some((p, a)) => (p.trim(), a),
+            None => return false,
+        };
+        let pid: u32 = match pid_str.parse() {
+            Ok(p) => p,
+            Err(_) => return false,
+        };
+        if pid == our_pid {
+            return false;
+        }
+        (args.contains("container exec") || args.contains("container run"))
+            && args.contains(container_name)
+    })
+}
+
+/// Stop the container if no other agentbox sessions are attached to it.
+/// Called after the blocking exec/run call returns.
+/// Errors are intentionally ignored — this is best-effort cleanup.
+pub fn maybe_stop_container(name: &str) {
+    let our_pid = std::process::id();
+
+    let output = match Command::new("ps")
+        .args(["-eo", "pid,args"])
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return, // Can't check — don't stop
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    if has_other_sessions(&stdout, name, our_pid) {
+        return;
+    }
+
+    eprintln!("[agentbox] no other sessions, stopping container {}...", name);
+    let _ = stop(name, false);
+}
+
 /// Parse container list JSON, returning (name, state) pairs for agentbox containers.
 fn parse_container_list(json_str: &str) -> Vec<(String, String)> {
     let containers: Vec<serde_json::Value> = serde_json::from_str(json_str).unwrap_or_default();
@@ -479,6 +525,49 @@ mod tests {
         let cmd = args.last().unwrap();
         assert!(!cmd.contains("HOSTEXEC"), "no bridge setup without env vars");
         assert_eq!(cmd, "claude --dangerously-skip-permissions");
+    }
+
+    #[test]
+    fn test_has_other_sessions_no_matches() {
+        let ps_output = "  PID ARGS\n  100 /bin/bash\n  200 vim main.rs\n";
+        assert!(!has_other_sessions(ps_output, "agentbox-myapp-abc123", 999));
+    }
+
+    #[test]
+    fn test_has_other_sessions_ignores_runtime_process() {
+        // Apple Container keeps a VM runtime process running — must not match
+        let ps_output = "  PID ARGS\n  100 /usr/local/libexec/container/plugins/container-runtime-linux/bin/container-runtime-linux start --root /Users/alex/Library/Application Support/com.apple.container/containers/agentbox-myapp-abc123 --uuid agentbox-myapp-abc123\n";
+        assert!(!has_other_sessions(ps_output, "agentbox-myapp-abc123", 999));
+    }
+
+    #[test]
+    fn test_has_other_sessions_own_pid_excluded() {
+        let ps_output = "  PID ARGS\n  100 container exec --tty agentbox-myapp-abc123 bash\n";
+        assert!(!has_other_sessions(ps_output, "agentbox-myapp-abc123", 100));
+    }
+
+    #[test]
+    fn test_has_other_sessions_other_pid_found() {
+        let ps_output = "  PID ARGS\n  100 container exec --tty agentbox-myapp-abc123 bash\n  200 vim\n";
+        assert!(has_other_sessions(ps_output, "agentbox-myapp-abc123", 999));
+    }
+
+    #[test]
+    fn test_has_other_sessions_different_container() {
+        let ps_output = "  PID ARGS\n  100 container exec --tty agentbox-other-def456 bash\n";
+        assert!(!has_other_sessions(ps_output, "agentbox-myapp-abc123", 999));
+    }
+
+    #[test]
+    fn test_has_other_sessions_multiple_sessions() {
+        let ps_output = "  PID ARGS\n  100 container exec --tty agentbox-myapp-abc123 bash\n  200 container exec agentbox-myapp-abc123 bash -lc claude\n";
+        assert!(has_other_sessions(ps_output, "agentbox-myapp-abc123", 999));
+    }
+
+    #[test]
+    fn test_has_other_sessions_run_command() {
+        let ps_output = "  PID ARGS\n  100 container run --name agentbox-myapp-abc123 --cpus 4 agentbox:default\n";
+        assert!(has_other_sessions(ps_output, "agentbox-myapp-abc123", 999));
     }
 
     #[test]
