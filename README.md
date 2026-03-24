@@ -11,23 +11,15 @@ Currently supports Claude Code. More agents planned.
 
 ## Install
 
-### Cargo
-
 ```bash
-cargo install agentbox
+curl -fsSL https://raw.githubusercontent.com/Rag0n/agentbox/main/install.sh | bash
 ```
 
-### Pre-built binary
+Or manually:
 
 ```bash
-curl -fsSL https://github.com/<user>/agentbox/releases/latest/download/agentbox-darwin-arm64.tar.gz | tar xz
+curl -fsSL https://github.com/Rag0n/agentbox/releases/latest/download/agentbox-darwin-arm64.tar.gz | tar xz
 mv agentbox ~/.local/bin/
-```
-
-### Homebrew (coming soon)
-
-```bash
-brew install agentbox
 ```
 
 ## Quick Start
@@ -204,6 +196,21 @@ After adding these volumes, restart your container (`agentbox rm && agentbox`) a
 ## What's Isolated
 
 Claude **cannot** access `~/.ssh`, `~/.aws`, `~/.gnupg`, or any other host directory.
+
+## Host Command Execution (Experimental)
+
+Run macOS host commands from inside the container. Useful for tools that can't run in Linux, like `xcodebuild` or `xcrun`.
+
+Configure in `~/.config/agentbox/config.toml`:
+
+```toml
+[bridge]
+allowed_commands = ["xcodebuild", "xcrun", "adb"]
+```
+
+Only commands in `allowed_commands` can be executed. The bridge starts automatically when commands are configured and stops when the session ends.
+
+Set `forward_not_found = true` to automatically forward any command not found in the container to the host.
 
 ## How It Works
 
