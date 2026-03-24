@@ -270,12 +270,12 @@ pub fn start(name: &str, verbose: bool) -> Result<()> {
     if verbose {
         eprintln!("[agentbox] container start {}", name);
     }
-    let status = Command::new("container")
+    let output = Command::new("container")
         .args(["start", name])
-        .status()
+        .output()
         .context("failed to run 'container start'")?;
 
-    if !status.success() {
+    if !output.status.success() {
         bail!("container start failed");
     }
     Ok(())
@@ -286,12 +286,12 @@ pub fn stop(name: &str, verbose: bool) -> Result<()> {
     if verbose {
         eprintln!("[agentbox] container stop {}", name);
     }
-    let status = Command::new("container")
+    let output = Command::new("container")
         .args(["stop", name])
-        .status()
+        .output()
         .context("failed to run 'container stop'")?;
 
-    if !status.success() {
+    if !output.status.success() {
         bail!("container stop failed");
     }
     Ok(())
@@ -302,12 +302,12 @@ pub fn rm(name: &str, verbose: bool) -> Result<()> {
     if verbose {
         eprintln!("[agentbox] container rm -f {}", name);
     }
-    let status = Command::new("container")
+    let output = Command::new("container")
         .args(["rm", "-f", name])
-        .status()
+        .output()
         .context("failed to run 'container rm'")?;
 
-    if !status.success() {
+    if !output.status.success() {
         bail!("container rm failed");
     }
     Ok(())
