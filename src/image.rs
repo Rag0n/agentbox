@@ -27,8 +27,7 @@ pub const ENTRYPOINT_SCRIPT: &str = include_str!("../resources/entrypoint.sh");
 const PROJECT_DIR: &str = env!("CARGO_MANIFEST_DIR");
 
 /// Git repo URL used to fetch source when local source is unavailable.
-/// TODO: update to actual repo URL once published
-const GIT_REPO_URL: &str = "https://github.com/AGuscable/agentbox.git";
+const GIT_REPO_URL: &str = "https://github.com/Rag0n/agentbox.git";
 
 /// Git-based builder stage, used when local source is not available.
 const HOSTEXEC_GIT_BUILDER: &str = "\
@@ -316,7 +315,7 @@ pub fn build(tag: &str, dockerfile_content: &str, no_cache: bool, pull: bool, ve
         anyhow::bail!("container build failed after buildkit reset");
     }
 
-    anyhow::bail!("container build failed");
+    anyhow::bail!("container build failed:\n{}", captured_stderr);
 }
 
 #[cfg(test)]
