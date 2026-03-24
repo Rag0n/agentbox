@@ -392,7 +392,7 @@ fn main() -> Result<()> {
             };
 
             // Start bridge if configured
-            let _bridge_handle = if !config.bridge.allowed_commands.is_empty() {
+            let bridge_handle = if !config.bridge.allowed_commands.is_empty() {
                 match bridge::start_bridge(&config.bridge, &cwd_str) {
                     Ok(handle) => {
                         eprintln!(
@@ -416,7 +416,7 @@ fn main() -> Result<()> {
 
             let result = match container::status(&name)? {
                 container::ContainerStatus::Running => {
-                    let env_vars = build_all_env_vars(&config, _bridge_handle.as_ref());
+                    let env_vars = build_all_env_vars(&config, bridge_handle.as_ref());
                     container::exec(&name, task_str.as_deref(), &env_vars, cli.verbose)
                 }
                 container::ContainerStatus::Stopped => {
@@ -437,11 +437,11 @@ fn main() -> Result<()> {
                             task_str.as_deref(),
                             cli.verbose,
                             &cli.mount,
-                            _bridge_handle.as_ref(),
+                            bridge_handle.as_ref(),
                         )
                     } else {
                         container::start(&name, cli.verbose)?;
-                        let env_vars = build_all_env_vars(&config, _bridge_handle.as_ref());
+                        let env_vars = build_all_env_vars(&config, bridge_handle.as_ref());
                         container::exec(&name, task_str.as_deref(), &env_vars, cli.verbose)
                     }
                 }
@@ -463,7 +463,7 @@ fn main() -> Result<()> {
                         task_str.as_deref(),
                         cli.verbose,
                         &cli.mount,
-                        _bridge_handle.as_ref(),
+                        bridge_handle.as_ref(),
                     )
                 }
             };
