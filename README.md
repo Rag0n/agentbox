@@ -79,8 +79,8 @@ volumes = [
 
 # Environment variables passed into container
 [env]
-ANTHROPIC_API_KEY = ""  # empty = inherit from host
-MY_API_KEY = "abc123"   # literal value
+CLAUDE_CODE_OAUTH_TOKEN = ""  # empty = inherit from host
+GH_TOKEN = ""                 # empty = inherit from host
 
 # Named profiles
 [profiles.mystack]
