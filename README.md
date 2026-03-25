@@ -7,7 +7,7 @@ Currently supports Claude Code. More agents planned.
 ## Requirements
 
 - macOS 26+ on Apple Silicon
-- [Apple Container CLI](https://github.com/apple/container)
+- [Apple Container CLI](https://github.com/apple/container) — download the installer package from [releases](https://github.com/apple/container/releases)
 
 ## Install
 
@@ -79,8 +79,8 @@ volumes = [
 
 # Environment variables passed into container
 [env]
-GH_TOKEN = ""           # empty = inherit from host
-LINEAR_API_KEY = "abc"  # literal value
+ANTHROPIC_API_KEY = ""  # empty = inherit from host
+MY_API_KEY = "abc123"   # literal value
 
 # Named profiles
 [profiles.mystack]
@@ -156,10 +156,10 @@ Your `~/.claude` settings directory is mounted into the container, so project se
 | `~/.claude.json` | `/home/user/.claude.json` | read/write |
 | Additional volumes | Configured path | read/write |
 
-Additional volumes can be mounted via config or CLI:
+Additional volumes can be mounted via [config](#configuration) or CLI:
 
 ```bash
-# Mount extra directories per-invocation
+# Mount extra directories per-invocation (see config for persistent mounts)
 agentbox --mount ~/.config/worktrunk --mount /path/to/other/dir
 ```
 
