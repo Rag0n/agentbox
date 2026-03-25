@@ -81,6 +81,7 @@ volumes = [
 [env]
 CLAUDE_CODE_OAUTH_TOKEN = ""  # empty = inherit from host
 GH_TOKEN = ""                 # empty = inherit from host
+MY_API_KEY = "abc123"         # literal value
 
 # Named profiles
 [profiles.mystack]
