@@ -34,15 +34,6 @@ agentbox "fix the failing tests"
 # List all containers
 agentbox ls
 
-# Stop current project's container
-agentbox stop
-
-# Stop specific containers
-agentbox stop agentbox-myapp-abc123 agentbox-other-def456
-
-# Stop all agentbox containers
-agentbox stop --all
-
 # Remove current project's container
 agentbox rm
 

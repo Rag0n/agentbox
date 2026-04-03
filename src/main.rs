@@ -45,14 +45,6 @@ enum Commands {
         #[arg(long)]
         all: bool,
     },
-    /// Stop containers (by name, current project, or --all)
-    Stop {
-        /// Container names to stop
-        names: Vec<String>,
-        /// Stop all agentbox containers
-        #[arg(long)]
-        all: bool,
-    },
     /// List all agentbox containers
     Ls,
     /// Force rebuild the container image (--no-cache for clean build)
@@ -326,26 +318,6 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Some(Commands::Stop { names, all }) => {
-            let targets = if all {
-                let all_names = container::list_names(cli.verbose)?;
-                if all_names.is_empty() {
-                    println!("No agentbox containers found.");
-                    return Ok(());
-                }
-                all_names
-            } else if names.is_empty() {
-                let cwd = std::env::current_dir()?;
-                vec![container::container_name(&cwd.to_string_lossy())]
-            } else {
-                names
-            };
-            for name in &targets {
-                container::stop(name, cli.verbose)?;
-                println!("Stopped {}", name);
-            }
-            Ok(())
-        }
         Some(Commands::Ls) => {
             container::list(cli.verbose)?;
             Ok(())
@@ -536,39 +508,6 @@ mod tests {
         assert!(matches!(cli.command, Some(Commands::Ls)));
     }
 
-    #[test]
-    fn test_stop_subcommand_no_args() {
-        let cli = Cli::try_parse_from(["agentbox", "stop"]).unwrap();
-        assert!(
-            matches!(cli.command, Some(Commands::Stop { ref names, all }) if names.is_empty() && !all)
-        );
-    }
-
-    #[test]
-    fn test_stop_subcommand_with_names() {
-        let cli = Cli::try_parse_from([
-            "agentbox",
-            "stop",
-            "agentbox-foo-abc123",
-            "agentbox-bar-def456",
-        ])
-        .unwrap();
-        match cli.command {
-            Some(Commands::Stop { names, all }) => {
-                assert_eq!(names, vec!["agentbox-foo-abc123", "agentbox-bar-def456"]);
-                assert!(!all);
-            }
-            _ => panic!("expected Stop"),
-        }
-    }
-
-    #[test]
-    fn test_stop_subcommand_all() {
-        let cli = Cli::try_parse_from(["agentbox", "stop", "--all"]).unwrap();
-        assert!(
-            matches!(cli.command, Some(Commands::Stop { ref names, all }) if names.is_empty() && all)
-        );
-    }
 
     #[test]
     fn test_build_subcommand() {
