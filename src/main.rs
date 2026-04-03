@@ -395,11 +395,13 @@ fn main() -> Result<()> {
             let bridge_handle = if !config.bridge.allowed_commands.is_empty() {
                 match bridge::start_bridge(&config.bridge, &cwd_str) {
                     Ok(handle) => {
-                        eprintln!(
-                            "[agentbox] bridge started on port {} ({} commands allowed)",
-                            handle.port,
-                            config.bridge.allowed_commands.len()
-                        );
+                        if cli.verbose {
+                            eprintln!(
+                                "[agentbox] bridge started on port {} ({} commands allowed)",
+                                handle.port,
+                                config.bridge.allowed_commands.len()
+                            );
+                        }
                         Some(handle)
                     }
                     Err(e) => {
