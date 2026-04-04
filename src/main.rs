@@ -116,6 +116,7 @@ fn create_and_run(
     task: Option<&str>,
     verbose: bool,
     extra_volumes: &[String],
+    cli_flags: &[String],
     bridge_handle: Option<&bridge::BridgeHandle>,
 ) -> Result<()> {
     let home = dirs::home_dir().context("cannot determine home directory")?;
@@ -184,6 +185,7 @@ fn create_and_run(
         volumes,
         interactive: task.is_none(),
         task: task.map(String::from),
+        cli_flags: cli_flags.to_vec(),
     };
 
     container::run(&opts, verbose)
@@ -273,6 +275,15 @@ fn install_signal_handlers() {
     }
 }
 
+fn split_at_double_dash(args: Vec<String>) -> (Vec<String>, Vec<String>) {
+    if let Some(pos) = args.iter().position(|a| a == "--") {
+        let (before, after) = args.split_at(pos);
+        (before.to_vec(), after[1..].to_vec())
+    } else {
+        (args, vec![])
+    }
+}
+
 fn main() -> Result<()> {
     // Check if we're invoked as hostexec (symlink mode)
     let binary_name = std::env::args()
@@ -295,7 +306,9 @@ fn main() -> Result<()> {
     }
 
     check_prerequisites()?;
-    let cli = Cli::parse();
+    let raw_args: Vec<String> = std::env::args().collect();
+    let (agentbox_args, passthrough_flags) = split_at_double_dash(raw_args);
+    let cli = Cli::parse_from(agentbox_args);
 
     match cli.command {
         Some(Commands::Rm { names, all }) => {
@@ -363,6 +376,10 @@ fn main() -> Result<()> {
                 Some(cli.task.join(" "))
             };
 
+            // Merge config cli flags + CLI passthrough flags
+            let mut cli_flags: Vec<String> = config.cli_flags("claude").to_vec();
+            cli_flags.extend(passthrough_flags.clone());
+
             // Start bridge if configured
             let bridge_handle = if !config.bridge.allowed_commands.is_empty() {
                 match bridge::start_bridge(&config.bridge, &cwd_str) {
@@ -391,7 +408,7 @@ fn main() -> Result<()> {
             let result = match container::status(&name)? {
                 container::ContainerStatus::Running => {
                     let env_vars = build_all_env_vars(&config, bridge_handle.as_ref());
-                    container::exec(&name, task_str.as_deref(), &env_vars, cli.verbose)
+                    container::exec(&name, task_str.as_deref(), &env_vars, &cli_flags, cli.verbose)
                 }
                 container::ContainerStatus::Stopped => {
                     let (dockerfile_content, image_tag) =
@@ -411,12 +428,13 @@ fn main() -> Result<()> {
                             task_str.as_deref(),
                             cli.verbose,
                             &cli.mount,
+                            &cli_flags,
                             bridge_handle.as_ref(),
                         )
                     } else {
                         container::start(&name, cli.verbose)?;
                         let env_vars = build_all_env_vars(&config, bridge_handle.as_ref());
-                        container::exec(&name, task_str.as_deref(), &env_vars, cli.verbose)
+                        container::exec(&name, task_str.as_deref(), &env_vars, &cli_flags, cli.verbose)
                     }
                 }
                 container::ContainerStatus::NotFound => {
@@ -437,6 +455,7 @@ fn main() -> Result<()> {
                         task_str.as_deref(),
                         cli.verbose,
                         &cli.mount,
+                        &cli_flags,
                         bridge_handle.as_ref(),
                     )
                 }
@@ -687,5 +706,55 @@ mod tests {
         assert_eq!(volumes.len(), 2); // CWD + /other/path, not 3
         assert_eq!(volumes[0], format!("{}:{}", workdir, workdir));
         assert_eq!(volumes[1], "/other/path:/other/path");
+    }
+
+    #[test]
+    fn test_split_at_double_dash_with_separator() {
+        let args = vec![
+            "fix".to_string(),
+            "the".to_string(),
+            "tests".to_string(),
+            "--".to_string(),
+            "--model".to_string(),
+            "sonnet".to_string(),
+        ];
+        let (task, flags) = split_at_double_dash(args);
+        assert_eq!(task, vec!["fix", "the", "tests"]);
+        assert_eq!(flags, vec!["--model", "sonnet"]);
+    }
+
+    #[test]
+    fn test_split_at_double_dash_no_separator() {
+        let args = vec!["fix".to_string(), "tests".to_string()];
+        let (task, flags) = split_at_double_dash(args);
+        assert_eq!(task, vec!["fix", "tests"]);
+        assert!(flags.is_empty());
+    }
+
+    #[test]
+    fn test_split_at_double_dash_empty() {
+        let (task, flags) = split_at_double_dash(vec![]);
+        assert!(task.is_empty());
+        assert!(flags.is_empty());
+    }
+
+    #[test]
+    fn test_split_at_double_dash_only_flags() {
+        let args = vec![
+            "--".to_string(),
+            "--model".to_string(),
+            "sonnet".to_string(),
+        ];
+        let (task, flags) = split_at_double_dash(args);
+        assert!(task.is_empty());
+        assert_eq!(flags, vec!["--model", "sonnet"]);
+    }
+
+    #[test]
+    fn test_split_at_double_dash_separator_at_end() {
+        let args = vec!["fix".to_string(), "tests".to_string(), "--".to_string()];
+        let (task, flags) = split_at_double_dash(args);
+        assert_eq!(task, vec!["fix", "tests"]);
+        assert!(flags.is_empty());
     }
 }

@@ -34,6 +34,7 @@ pub struct RunOpts {
     pub volumes: Vec<String>,
     pub interactive: bool,
     pub task: Option<String>,
+    pub cli_flags: Vec<String>,
 }
 
 impl RunOpts {
@@ -60,6 +61,11 @@ impl RunOpts {
         }
 
         args.push(self.image.clone());
+
+        // CLI flags (passed through to entrypoint's "$@")
+        for flag in &self.cli_flags {
+            args.push(flag.clone());
+        }
 
         // Append task args after image (passed to entrypoint)
         if let Some(task) = &self.task {
@@ -195,7 +201,7 @@ pub fn run(opts: &RunOpts, verbose: bool) -> Result<()> {
 }
 
 /// Build the argument list for `container exec`.
-fn build_exec_args(name: &str, task: Option<&str>, env_vars: &[(String, String)]) -> Vec<String> {
+fn build_exec_args(name: &str, task: Option<&str>, env_vars: &[(String, String)], cli_flags: &[String]) -> Vec<String> {
     let mut args = vec!["exec".to_string()];
     if task.is_none() {
         args.push("--interactive".into());
@@ -232,6 +238,9 @@ fn build_exec_args(name: &str, task: Option<&str>, env_vars: &[(String, String)]
         );
     }
     cmd.push_str("claude --dangerously-skip-permissions");
+    for flag in cli_flags {
+        cmd.push_str(&format!(" '{}'", flag.replace('\'', "'\\''")));
+    }
     if let Some(t) = task {
         cmd.push_str(&format!(" -p '{}'", t.replace('\'', "'\\''")));
     }
@@ -244,9 +253,10 @@ pub fn exec(
     name: &str,
     task: Option<&str>,
     env_vars: &[(String, String)],
+    cli_flags: &[String],
     verbose: bool,
 ) -> Result<()> {
-    let args = build_exec_args(name, task, env_vars);
+    let args = build_exec_args(name, task, env_vars, cli_flags);
 
     if verbose {
         eprintln!("[agentbox] container {}", args.join(" "));
@@ -387,6 +397,7 @@ mod tests {
             volumes: vec!["/Users/alex/Dev/myapp:/Users/alex/Dev/myapp".into()],
             interactive: true,
             task: None,
+            cli_flags: vec![],
         };
         let args = opts.to_run_args();
         assert!(args.contains(&"--name".to_string()));
@@ -468,7 +479,7 @@ mod tests {
             ("GH_TOKEN".to_string(), "tok123".to_string()),
             ("TERM".to_string(), "xterm".to_string()),
         ];
-        let args = build_exec_args("mycontainer", Some("fix tests"), &env_vars);
+        let args = build_exec_args("mycontainer", Some("fix tests"), &env_vars, &[]);
         assert!(args.contains(&"--env".to_string()));
         assert!(args.contains(&"GH_TOKEN=tok123".to_string()));
         assert!(args.contains(&"TERM=xterm".to_string()));
@@ -482,7 +493,7 @@ mod tests {
 
     #[test]
     fn test_exec_args_interactive_no_task() {
-        let args = build_exec_args("mycontainer", None, &[]);
+        let args = build_exec_args("mycontainer", None, &[], &[]);
         assert!(args.contains(&"--interactive".to_string()));
         assert!(args.contains(&"--tty".to_string()));
         // No -p flag in command string when no task
@@ -498,7 +509,7 @@ mod tests {
             ("HOSTEXEC_TOKEN".to_string(), "tok".to_string()),
             ("HOSTEXEC_COMMANDS".to_string(), "xcodebuild xcrun".to_string()),
         ];
-        let args = build_exec_args("mycontainer", None, &env_vars);
+        let args = build_exec_args("mycontainer", None, &env_vars, &[]);
         let cmd = args.last().unwrap();
         assert!(cmd.contains("HOSTEXEC_COMMANDS"), "should set up symlinks");
         assert!(cmd.contains("ln -sf /usr/local/bin/hostexec"));
@@ -514,14 +525,14 @@ mod tests {
                 "true".to_string(),
             ),
         ];
-        let args = build_exec_args("mycontainer", None, &env_vars);
+        let args = build_exec_args("mycontainer", None, &env_vars, &[]);
         let cmd = args.last().unwrap();
         assert!(cmd.contains("command_not_found_handle"));
     }
 
     #[test]
     fn test_exec_args_no_hostexec_without_env() {
-        let args = build_exec_args("mycontainer", None, &[]);
+        let args = build_exec_args("mycontainer", None, &[], &[]);
         let cmd = args.last().unwrap();
         assert!(!cmd.contains("HOSTEXEC"), "no bridge setup without env vars");
         assert_eq!(cmd, "claude --dangerously-skip-permissions");
@@ -571,6 +582,95 @@ mod tests {
     }
 
     #[test]
+    fn test_exec_args_with_cli_flags() {
+        let cli_flags = vec![
+            "--append-system-prompt".to_string(),
+            "Be careful.".to_string(),
+            "--model".to_string(),
+            "sonnet".to_string(),
+        ];
+        let args = build_exec_args("mycontainer", None, &[], &cli_flags);
+        let cmd = args.last().unwrap();
+        assert!(cmd.contains("claude --dangerously-skip-permissions"));
+        assert!(cmd.contains("'--append-system-prompt' 'Be careful.'"));
+        assert!(cmd.contains("'--model' 'sonnet'"));
+    }
+
+    #[test]
+    fn test_exec_args_cli_flags_before_task() {
+        let cli_flags = vec!["--model".to_string(), "sonnet".to_string()];
+        let args = build_exec_args("mycontainer", Some("fix tests"), &[], &cli_flags);
+        let cmd = args.last().unwrap();
+        // Flags should appear between --dangerously-skip-permissions and -p
+        let dsp_pos = cmd.find("--dangerously-skip-permissions").unwrap();
+        let model_pos = cmd.find("'--model'").unwrap();
+        let task_pos = cmd.find("-p '").unwrap();
+        assert!(dsp_pos < model_pos);
+        assert!(model_pos < task_pos);
+    }
+
+    #[test]
+    fn test_exec_args_cli_flags_empty() {
+        let args = build_exec_args("mycontainer", None, &[], &[]);
+        let cmd = args.last().unwrap();
+        assert_eq!(cmd, "claude --dangerously-skip-permissions");
+    }
+
+    #[test]
+    fn test_exec_args_cli_flags_with_single_quotes() {
+        let cli_flags = vec![
+            "--append-system-prompt".to_string(),
+            "Don't break things".to_string(),
+        ];
+        let args = build_exec_args("mycontainer", None, &[], &cli_flags);
+        let cmd = args.last().unwrap();
+        // Single quotes in values must be escaped
+        assert!(cmd.contains("Don'\\''t break things"));
+    }
+
+    #[test]
+    fn test_run_args_with_cli_flags() {
+        let opts = RunOpts {
+            name: "agentbox-myapp-abc123".into(),
+            image: "agentbox:default".into(),
+            workdir: "/Users/alex/Dev/myapp".into(),
+            cpus: 2,
+            memory: "4G".into(),
+            env_vars: vec![],
+            volumes: vec![],
+            interactive: false,
+            task: Some("fix tests".into()),
+            cli_flags: vec!["--model".into(), "sonnet".into()],
+        };
+        let args = opts.to_run_args();
+        let image_pos = args.iter().position(|a| a == "agentbox:default").unwrap();
+        let model_pos = args.iter().position(|a| a == "--model").unwrap();
+        let p_pos = args.iter().position(|a| a == "-p").unwrap();
+        // cli_flags come after image, before -p
+        assert!(image_pos < model_pos);
+        assert!(model_pos < p_pos);
+    }
+
+    #[test]
+    fn test_run_args_cli_flags_empty() {
+        let opts = RunOpts {
+            name: "test".into(),
+            image: "agentbox:default".into(),
+            workdir: "/tmp".into(),
+            cpus: 1,
+            memory: "4G".into(),
+            env_vars: vec![],
+            volumes: vec![],
+            interactive: true,
+            task: None,
+            cli_flags: vec![],
+        };
+        let args = opts.to_run_args();
+        // Last arg should be the image since no task and no cli_flags
+        assert_eq!(args.last().unwrap(), "agentbox:default");
+    }
+
+    #[test]
     fn test_build_run_args_headless() {
         let opts = RunOpts {
             name: "agentbox-myapp-abc123".into(),
@@ -582,6 +682,7 @@ mod tests {
             volumes: vec![],
             interactive: false,
             task: Some("fix the tests".into()),
+            cli_flags: vec![],
         };
         let args = opts.to_run_args();
         assert!(!args.contains(&"--interactive".to_string()));

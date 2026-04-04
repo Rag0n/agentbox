@@ -47,6 +47,28 @@ agentbox rm --all
 agentbox build
 ```
 
+## Passing Flags to the Coding Agent
+
+Use `--` to pass flags through to the underlying CLI (e.g., Claude Code):
+
+```bash
+# Pass a model flag
+agentbox -- --model sonnet
+
+# Append to system prompt for a headless task
+agentbox "fix the tests" -- --append-system-prompt "Be concise."
+```
+
+For flags you want every time, set them in config instead of repeating on every invocation:
+
+```toml
+# ~/.config/agentbox/config.toml
+[cli.claude]
+flags = ["--append-system-prompt", "Be brutally honest."]
+```
+
+Config flags and `--` flags are merged. Config flags come first, `--` flags after.
+
 ## Configuration
 
 Optional. Create with `agentbox config init`.
@@ -73,6 +95,10 @@ volumes = [
 CLAUDE_CODE_OAUTH_TOKEN = ""  # empty = inherit from host
 GH_TOKEN = ""                 # empty = inherit from host
 MY_API_KEY = "abc123"         # literal value
+
+# Extra CLI flags passed to the coding agent
+[cli.claude]
+flags = ["--append-system-prompt", "Be brutally honest."]
 
 # Named profiles
 [profiles.mystack]

@@ -11,6 +11,13 @@ pub struct BridgeConfig {
     pub host_ip: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+pub struct CliConfig {
+    #[serde(default)]
+    pub flags: Vec<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -25,6 +32,8 @@ pub struct Config {
     pub volumes: Vec<String>,
     #[serde(default)]
     pub bridge: BridgeConfig,
+    #[serde(default)]
+    pub cli: HashMap<String, CliConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -42,6 +51,7 @@ impl Default for Config {
             profiles: HashMap::new(),
             volumes: Vec::new(),
             bridge: BridgeConfig::default(),
+            cli: HashMap::new(),
         }
     }
 }
@@ -77,6 +87,13 @@ impl Config {
         })
     }
 
+    pub fn cli_flags(&self, cli_name: &str) -> &[String] {
+        self.cli
+            .get(cli_name)
+            .map(|c| c.flags.as_slice())
+            .unwrap_or(&[])
+    }
+
     pub fn init_template() -> &'static str {
         r#"# agentbox configuration
 
@@ -102,6 +119,10 @@ impl Config {
 # Named profiles with custom Dockerfiles
 # [profiles.name]
 # dockerfile = "/path/to/Dockerfile"
+
+# Extra CLI flags passed to the coding agent
+# [cli.claude]
+# flags = ["--append-system-prompt", "Your instructions here"]
 
 # Host bridge: execute commands on macOS host from container
 # [bridge]
@@ -205,6 +226,7 @@ mod tests {
         assert!(content.contains("# [env]"));
         assert!(content.contains("# [profiles."));
         assert!(content.contains("# volumes"));
+        assert!(content.contains("# [cli.claude]"));
     }
 
     #[test]
@@ -246,5 +268,61 @@ mod tests {
         "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.bridge.host_ip, Some("10.0.0.1".to_string()));
+    }
+
+    #[test]
+    fn test_parse_cli_config() {
+        let toml_str = r#"
+            [cli.claude]
+            flags = ["--append-system-prompt", "Be careful.", "--model", "sonnet"]
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let claude_cli = config.cli.get("claude").unwrap();
+        assert_eq!(
+            claude_cli.flags,
+            vec!["--append-system-prompt", "Be careful.", "--model", "sonnet"]
+        );
+    }
+
+    #[test]
+    fn test_parse_multiple_cli_configs() {
+        let toml_str = r#"
+            [cli.claude]
+            flags = ["--model", "sonnet"]
+
+            [cli.codex]
+            flags = ["--full-auto"]
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.cli.get("claude").unwrap().flags, vec!["--model", "sonnet"]);
+        assert_eq!(config.cli.get("codex").unwrap().flags, vec!["--full-auto"]);
+    }
+
+    #[test]
+    fn test_default_config_has_empty_cli() {
+        let config = Config::default();
+        assert!(config.cli.is_empty());
+    }
+
+    #[test]
+    fn test_cli_flags_helper_found() {
+        let toml_str = r#"
+            [cli.claude]
+            flags = ["--model", "sonnet"]
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.cli_flags("claude"), &["--model", "sonnet"]);
+    }
+
+    #[test]
+    fn test_cli_flags_helper_not_found() {
+        let config = Config::default();
+        assert!(config.cli_flags("claude").is_empty());
+    }
+
+    #[test]
+    fn test_cli_config_omitted() {
+        let config: Config = toml::from_str("").unwrap();
+        assert!(config.cli.is_empty());
     }
 }
