@@ -139,7 +139,7 @@ pub fn has_other_sessions(ps_output: &str, container_name: &str, our_pid: u32) -
 /// Stop the container if no other agentbox sessions are attached to it.
 /// Called after the blocking exec/run call returns.
 /// Errors are intentionally ignored — this is best-effort cleanup.
-pub fn maybe_stop_container(name: &str) {
+pub fn maybe_stop_container(name: &str, verbose: bool) {
     let our_pid = std::process::id();
 
     let output = match Command::new("ps")
@@ -156,7 +156,9 @@ pub fn maybe_stop_container(name: &str) {
         return;
     }
 
-    eprintln!("[agentbox] no other sessions, stopping container {}...", name);
+    if verbose {
+        eprintln!("[agentbox] no other sessions, stopping container {}...", name);
+    }
     let _ = stop(name, false);
 }
 

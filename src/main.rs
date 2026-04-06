@@ -462,7 +462,7 @@ fn main() -> Result<()> {
             };
 
             // Auto-stop container if we're the last session
-            container::maybe_stop_container(&name);
+            container::maybe_stop_container(&name, cli.verbose);
 
             result
         }
