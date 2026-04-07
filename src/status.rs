@@ -178,6 +178,33 @@ pub fn format_mem(bytes: u64) -> String {
     }
 }
 
+/// Shorten a filesystem path for display:
+/// 1. If `path` starts with `home`, replace prefix with `~`.
+/// 2. If the result exceeds `max_width`, truncate from the right and
+///    append `…`. Operates on chars, not bytes — safe for UTF-8.
+pub fn shorten_path(path: &str, home: &Path, max_width: usize) -> String {
+    let home_str = home.to_string_lossy();
+    let home_str = home_str.trim_end_matches('/');
+    let with_tilde: String = if path == home_str {
+        "~".to_string()
+    } else if let Some(suffix) = path.strip_prefix(&format!("{}/", home_str)) {
+        format!("~/{}", suffix)
+    } else {
+        path.to_string()
+    };
+    let char_count = with_tilde.chars().count();
+    if char_count <= max_width {
+        return with_tilde;
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    // Reserve 1 char for the ellipsis.
+    let keep = max_width.saturating_sub(1);
+    let truncated: String = with_tilde.chars().take(keep).collect();
+    format!("{}…", truncated)
+}
+
 /// Top-level entry point: gather rows, print fast pass, then live pass if TTY.
 /// Stub — full implementation lands in Task 9.
 pub fn run(_verbose: bool) -> Result<()> {
@@ -420,5 +447,58 @@ buildkit                     0.01%  1.50 GiB / 2.00 GiB    2.11 GiB / 7.49 MiB  
         assert_eq!(format_mem(1024 * 1024), "1M");
         // Exactly 1 GiB → "1.0G"
         assert_eq!(format_mem(1024 * 1024 * 1024), "1.0G");
+    }
+
+    #[test]
+    fn test_shorten_path_home_prefix() {
+        let home = Path::new("/Users/alex");
+        assert_eq!(shorten_path("/Users/alex/Dev/myapp", home, 40), "~/Dev/myapp");
+    }
+
+    #[test]
+    fn test_shorten_path_home_exact() {
+        let home = Path::new("/Users/alex");
+        assert_eq!(shorten_path("/Users/alex", home, 40), "~");
+    }
+
+    #[test]
+    fn test_shorten_path_no_home_prefix() {
+        let home = Path::new("/Users/alex");
+        assert_eq!(shorten_path("/opt/foo", home, 40), "/opt/foo");
+    }
+
+    #[test]
+    fn test_shorten_path_with_spaces() {
+        let home = Path::new("/Users/alex");
+        assert_eq!(
+            shorten_path("/Users/alex/Library/Mobile Documents/x", home, 40),
+            "~/Library/Mobile Documents/x"
+        );
+    }
+
+    #[test]
+    fn test_shorten_path_ellipsize_when_too_long() {
+        let home = Path::new("/Users/alex");
+        // ~/Dev/Personal/marketplace = 26 chars; max 20 → ellipsized
+        let result = shorten_path("/Users/alex/Dev/Personal/marketplace", home, 20);
+        assert_eq!(result.chars().count(), 20);
+        assert!(result.ends_with("…"));
+        // Should preserve the leading ~/
+        assert!(result.starts_with("~/"));
+    }
+
+    #[test]
+    fn test_shorten_path_short_max_no_panic() {
+        let home = Path::new("/Users/alex");
+        // max=3 should not panic, even if result can't fit anything meaningful
+        let result = shorten_path("/Users/alex/very/long/path", home, 3);
+        assert!(result.chars().count() <= 3);
+    }
+
+    #[test]
+    fn test_shorten_path_exact_fit() {
+        let home = Path::new("/Users/alex");
+        // ~/Dev/myapp is 11 chars; max 11 → not ellipsized
+        assert_eq!(shorten_path("/Users/alex/Dev/myapp", home, 11), "~/Dev/myapp");
     }
 }
