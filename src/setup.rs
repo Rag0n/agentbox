@@ -9,6 +9,7 @@
 //! See wiki/2026-04-07-agentbox-setup-design.md for full spec.
 
 use anyhow::{Context, Result};
+use std::io::Write;
 use std::process::Command;
 use crate::config::Config;
 
@@ -265,6 +266,97 @@ fn check_authentication() -> Status {
     }
 }
 
+fn print_indented(text: &str, indent: usize) {
+    for line in text.lines() {
+        println!("{}{}", " ".repeat(indent), line);
+    }
+}
+
+fn prompt_menu(menu: Vec<MenuOption>) -> Result<()> {
+    for (i, option) in menu.iter().enumerate() {
+        println!("          {}) {}", i + 1, option.label);
+    }
+    print!("        > ");
+    std::io::stdout().flush()?;
+
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    let choice = input.trim().parse::<usize>().unwrap_or(0);
+
+    if choice > 0 && choice <= menu.len() {
+        let mut menu_vec = menu;
+        let option = menu_vec.remove(choice - 1);
+        (option.action)()?;
+    } else {
+        println!("        Invalid choice.");
+    }
+
+    Ok(())
+}
+
 pub fn run_setup() -> Result<()> {
-    unimplemented!()
+    let checks: &[(&str, fn() -> Status)] = &[
+        ("Apple Container CLI", check_container_cli),
+        ("Container system running", check_container_system),
+        ("Config file", check_config_file),
+        ("Authentication", check_authentication),
+    ];
+
+    let mut passed = 0;
+
+    for (i, (name, check_fn)) in checks.iter().enumerate() {
+        print!("  [{}/{}] {:<30} ", i + 1, checks.len(), name);
+        match check_fn() {
+            Status::Ok => {
+                println!("✓");
+                passed += 1;
+            }
+            Status::AutoFix { explanation, fix } => {
+                println!("✗");
+                if !explanation.is_empty() {
+                    print_indented(&explanation, 8);
+                }
+                match fix() {
+                    Ok(()) => {
+                        println!("        ✓");
+                        passed += 1;
+                    }
+                    Err(e) => {
+                        println!("        failed: {:#}", e);
+                    }
+                }
+            }
+            Status::Manual {
+                explanation,
+                next_steps,
+            } => {
+                println!("✗");
+                print_indented(&explanation, 8);
+                print_indented(&next_steps, 8);
+            }
+            Status::Interactive {
+                explanation,
+                menu,
+            } => {
+                println!("✗");
+                print_indented(&explanation, 8);
+                prompt_menu(menu)?;
+            }
+            Status::Errored(e) => {
+                println!("error: {:#}", e);
+            }
+        }
+    }
+
+    println!();
+    if passed == checks.len() {
+        println!("Ready. Run `agentbox` to start coding.");
+    } else {
+        println!(
+            "{}/{} checks passed. Re-run `agentbox setup` after completing the steps above.",
+            passed, checks.len()
+        );
+    }
+
+    Ok(())
 }
