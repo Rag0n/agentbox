@@ -17,7 +17,7 @@ pub struct Row {
     pub mem_total: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
     Running,
     Stopped,
@@ -222,7 +222,7 @@ fn row_cells(row: &Row, home: &Path, now_unix: i64) -> [String; 7] {
         (Some(u), Some(t)) => format!("{}/{}", format_mem(u), format_mem(t)),
         _ => "--".to_string(),
     };
-    let uptime = match (row.state.clone(), row.started_unix) {
+    let uptime = match (row.state, row.started_unix) {
         (State::Running, Some(start)) => format_uptime(now_unix - start),
         _ => "--".to_string(),
     };
@@ -280,7 +280,6 @@ pub fn format_table(
     home: &Path,
     now_unix: i64,
 ) -> String {
-    // Build all cell strings (header, data rows, totals).
     let mut all_rows: Vec<[String; 7]> = Vec::new();
     all_rows.push(HEADERS.map(String::from));
     for row in rows {
@@ -288,7 +287,6 @@ pub fn format_table(
     }
     all_rows.push(totals_cells(rows));
 
-    // Compute per-column max widths.
     let mut widths = [0usize; 7];
     for r in &all_rows {
         for (i, cell) in r.iter().enumerate() {
@@ -299,13 +297,9 @@ pub fn format_table(
         }
     }
 
-    // Render rows. Two-space gutter between columns. The last column is
-    // left-aligned without trailing pad.
-    //
-    // Bolding rules: a "data row" is any row that's neither the header (idx
-    // 0) nor the totals (idx data_count + 1). When `use_color` is true and
-    // the data row's name matches `current_name`, wrap the entire line in
-    // ANSI bold (`\x1b[1m` … `\x1b[22m`).
+    // Bolding only applies to data rows — not the header (idx 0) or totals
+    // (idx data_count + 1) — and only when the data row's name matches
+    // `current_name`. The entire line gets wrapped in ANSI bold.
     let data_count = rows.len();
     let mut out = String::new();
     for (idx, r) in all_rows.iter().enumerate() {
