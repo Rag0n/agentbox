@@ -10,13 +10,17 @@
 
 use anyhow::{Context, Result};
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use crate::config::Config;
 
+const ANTHROPIC_API_KEY: &str = "ANTHROPIC_API_KEY";
+const CLAUDE_CODE_OAUTH_TOKEN: &str = "CLAUDE_CODE_OAUTH_TOKEN";
+const AUTH_KEYS: &[&str] = &[ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN];
+
 pub enum Status {
-    /// Check passed.
     Ok,
-    /// Auto-fixable: orchestrator will run `fix()` with no prompt.
+    /// Auto-fixable: orchestrator runs `fix()` directly, no consent prompt.
     AutoFix {
         explanation: String,
         fix: Box<dyn FnOnce() -> Result<()>>,
@@ -26,7 +30,7 @@ pub enum Status {
         explanation: String,
         next_steps: String,
     },
-    /// Interactive menu (used only by auth check).
+    /// Interactive menu (used only by the auth check).
     Interactive {
         explanation: String,
         menu: Vec<MenuOption>,
@@ -41,37 +45,27 @@ pub struct MenuOption {
 }
 
 fn check_container_cli() -> Status {
-    match Command::new("container")
-        .arg("--version")
-        .output()
-    {
+    match Command::new("container").arg("--version").output() {
         Ok(_) => Status::Ok,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            Status::Manual {
-                explanation: "Apple Container CLI is not installed or not on PATH.".to_string(),
-                next_steps: "Download and install from: https://github.com/apple/container/releases".to_string(),
-            }
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Status::Manual {
+            explanation: "Apple Container CLI is not installed or not on PATH.".to_string(),
+            next_steps: "Download and install from: https://github.com/apple/container/releases"
+                .to_string(),
+        },
         Err(e) => Status::Errored(anyhow::anyhow!("Failed to check container CLI: {}", e)),
     }
 }
 
-/// Parse `container system status` output and check if the system is running.
-/// Looking for a line that matches: "status running"
+/// Parse `container system status` output: looks for a `status running` line.
 fn parse_system_status(stdout: &str) -> bool {
-    stdout
-        .lines()
-        .any(|line| {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            parts.len() == 2 && parts[0] == "status" && parts[1] == "running"
-        })
+    stdout.lines().any(|line| {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        parts.len() == 2 && parts[0] == "status" && parts[1] == "running"
+    })
 }
 
 fn check_container_system() -> Status {
-    match Command::new("container")
-        .args(["system", "status"])
-        .output()
-    {
+    match Command::new("container").args(["system", "status"]).output() {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if parse_system_status(&stdout) {
@@ -105,7 +99,8 @@ fn check_config_file() -> Status {
         Status::Ok
     } else {
         Status::AutoFix {
-            explanation: "Config file does not exist. Creating it from the default template...".to_string(),
+            explanation: "Config file does not exist. Creating it from the default template..."
+                .to_string(),
             fix: Box::new(|| {
                 let config_path = Config::config_path();
                 let parent = config_path.parent().context("config path has no parent")?;
@@ -117,69 +112,69 @@ fn check_config_file() -> Status {
     }
 }
 
-/// Pure function that decides whether authentication is reachable.
-/// Separated for testing purposes.
+/// Pure decision function: is authentication reachable?
+/// Separated from `check_authentication` so it can be unit-tested without I/O.
 fn decide_auth(
     config: &Config,
     host_env: &dyn Fn(&str) -> Option<String>,
     credentials_exists: bool,
 ) -> bool {
-    // Check for literal non-empty values in config
-    if let Some(val) = config.env.get("ANTHROPIC_API_KEY") {
+    for key in AUTH_KEYS {
+        let Some(val) = config.env.get(*key) else { continue };
         if !val.is_empty() {
             return true;
         }
-    }
-    if let Some(val) = config.env.get("CLAUDE_CODE_OAUTH_TOKEN") {
-        if !val.is_empty() {
+        if host_env(key).map_or(false, |v| !v.is_empty()) {
             return true;
         }
     }
-
-    // Check for empty (inherit) in config + host env
-    if let Some(val) = config.env.get("ANTHROPIC_API_KEY") {
-        if val.is_empty() && host_env("ANTHROPIC_API_KEY").is_some() {
-            return true;
-        }
-    }
-    if let Some(val) = config.env.get("CLAUDE_CODE_OAUTH_TOKEN") {
-        if val.is_empty() && host_env("CLAUDE_CODE_OAUTH_TOKEN").is_some() {
-            return true;
-        }
-    }
-
-    // Check for on-disk credentials
     credentials_exists
 }
 
-/// Idempotently add a key to the [env] section of the config file.
-/// Uses toml_edit to preserve comments and formatting.
-/// If the key already exists, this is a no-op.
-fn ensure_env_var_in_config(key: &str) -> Result<()> {
-    use toml_edit::{value, table, DocumentMut};
+/// Idempotently add a key to the `[env]` section of the config file at `path`.
+/// Preserves comments and formatting via `toml_edit`. No-op if the key exists.
+fn ensure_env_var_in_config(path: &Path, key: &str) -> Result<()> {
+    use toml_edit::{table, value, DocumentMut};
 
-    let path = Config::config_path();
-    let content = std::fs::read_to_string(&path)?;
+    let content = std::fs::read_to_string(path)?;
     let mut doc: DocumentMut = content.parse()?;
 
-    let env_tbl = match doc.entry("env").or_insert(table()).as_table_mut() {
-        Some(t) => t,
-        None => anyhow::bail!("'env' in config is not a table"),
-    };
+    let env_tbl = doc
+        .entry("env")
+        .or_insert(table())
+        .as_table_mut()
+        .context("'env' in config is not a table")?;
 
-    // Idempotent: if key already exists, do nothing
     if env_tbl.contains_key(key) {
         return Ok(());
     }
 
     env_tbl.insert(key, value(""));
-    std::fs::write(&path, doc.to_string())?;
+    std::fs::write(path, doc.to_string())?;
     Ok(())
 }
 
-const AUTH_EXPLANATION: &str = r#"macOS Keychain isn't reachable from the Linux container, so
+const AUTH_EXPLANATION: &str = "macOS Keychain isn't reachable from the Linux container, so
 Claude Code needs credentials via env var, or a one-time login
-from inside the container (the token persists under ~/.claude)."#;
+from inside the container (the token persists under ~/.claude).";
+
+/// Prompt user for `[Y/n]` confirmation, then add `key = ""` under `[env]` in
+/// the config file. Used by both the API-key and OAuth-token menu branches.
+fn prompt_and_add_env_var(key: &str) -> Result<()> {
+    println!(
+        "\n        Add `{} = \"\"` under [env] in your config automatically? [Y/n]",
+        key
+    );
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    let answer = input.trim();
+    if answer.is_empty() || answer.eq_ignore_ascii_case("y") {
+        ensure_env_var_in_config(&Config::config_path(), key)?;
+        println!("        ✓ Updated ~/.config/agentbox/config.toml");
+        println!("        Then re-run `agentbox setup` in a new shell to confirm.");
+    }
+    Ok(())
+}
 
 fn build_auth_menu() -> Vec<MenuOption> {
     vec![
@@ -195,16 +190,8 @@ fn build_auth_menu() -> Vec<MenuOption> {
             label: "Use an API key (ANTHROPIC_API_KEY)",
             action: Box::new(|| {
                 println!("\n        Run this in your shell (and add it to ~/.zshrc / ~/.bashrc for next time):");
-                println!("\n            export ANTHROPIC_API_KEY=\"sk-...\"");
-                println!("\n        Add `ANTHROPIC_API_KEY = \"\"` under [env] in your config automatically? [Y/n]");
-                let mut input = String::new();
-                std::io::stdin().read_line(&mut input)?;
-                if input.trim().is_empty() || input.trim().eq_ignore_ascii_case("y") {
-                    ensure_env_var_in_config("ANTHROPIC_API_KEY")?;
-                    println!("        ✓ Updated ~/.config/agentbox/config.toml");
-                    println!("        Then re-run `agentbox setup` in a new shell to confirm.");
-                }
-                Ok(())
+                println!("\n            export {}=\"sk-...\"", ANTHROPIC_API_KEY);
+                prompt_and_add_env_var(ANTHROPIC_API_KEY)
             }),
         },
         MenuOption {
@@ -213,16 +200,8 @@ fn build_auth_menu() -> Vec<MenuOption> {
                 println!("\n        Requires the host `claude` CLI. Run this on your Mac first:");
                 println!("\n            claude setup-token");
                 println!("\n        Copy the token, then run in your shell (and add it to ~/.zshrc / ~/.bashrc):");
-                println!("\n            export CLAUDE_CODE_OAUTH_TOKEN=\"your-token-here\"");
-                println!("\n        Add `CLAUDE_CODE_OAUTH_TOKEN = \"\"` under [env] in your config automatically? [Y/n]");
-                let mut input = String::new();
-                std::io::stdin().read_line(&mut input)?;
-                if input.trim().is_empty() || input.trim().eq_ignore_ascii_case("y") {
-                    ensure_env_var_in_config("CLAUDE_CODE_OAUTH_TOKEN")?;
-                    println!("        ✓ Updated ~/.config/agentbox/config.toml");
-                    println!("        Then re-run `agentbox setup` in a new shell to confirm.");
-                }
-                Ok(())
+                println!("\n            export {}=\"your-token-here\"", CLAUDE_CODE_OAUTH_TOKEN);
+                prompt_and_add_env_var(CLAUDE_CODE_OAUTH_TOKEN)
             }),
         },
         MenuOption {
@@ -235,26 +214,21 @@ fn build_auth_menu() -> Vec<MenuOption> {
     ]
 }
 
+fn credentials_file_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".claude/.credentials.json"))
+}
+
 fn check_authentication() -> Status {
     let config = match Config::load() {
         Ok(c) => c,
         Err(e) => return Status::Errored(e),
     };
 
-    let host_env = |key: &str| std::env::var(key).ok();
-    let credentials_path = dirs::home_dir()
-        .map(|h| h.join(".claude/.credentials.json"))
-        .and_then(|p| {
-            std::fs::metadata(&p).ok().and_then(|m| {
-                if m.len() > 0 {
-                    Some(p)
-                } else {
-                    None
-                }
-            })
-        });
+    let credentials_exists = credentials_file_path()
+        .and_then(|p| std::fs::metadata(p).ok())
+        .map_or(false, |m| m.len() > 0);
 
-    let credentials_exists = credentials_path.is_some();
+    let host_env = |key: &str| std::env::var(key).ok();
 
     if decide_auth(&config, &host_env, credentials_exists) {
         Status::Ok
@@ -267,12 +241,13 @@ fn check_authentication() -> Status {
 }
 
 fn print_indented(text: &str, indent: usize) {
+    let pad = " ".repeat(indent);
     for line in text.lines() {
-        println!("{}{}", " ".repeat(indent), line);
+        println!("{}{}", pad, line);
     }
 }
 
-fn prompt_menu(menu: Vec<MenuOption>) -> Result<()> {
+fn prompt_menu(mut menu: Vec<MenuOption>) -> Result<()> {
     for (i, option) in menu.iter().enumerate() {
         println!("          {}) {}", i + 1, option.label);
     }
@@ -284,8 +259,7 @@ fn prompt_menu(menu: Vec<MenuOption>) -> Result<()> {
     let choice = input.trim().parse::<usize>().unwrap_or(0);
 
     if choice > 0 && choice <= menu.len() {
-        let mut menu_vec = menu;
-        let option = menu_vec.remove(choice - 1);
+        let option = menu.remove(choice - 1);
         (option.action)()?;
     } else {
         println!("        Invalid choice.");
@@ -326,18 +300,12 @@ pub fn run_setup() -> Result<()> {
                     }
                 }
             }
-            Status::Manual {
-                explanation,
-                next_steps,
-            } => {
+            Status::Manual { explanation, next_steps } => {
                 println!("✗");
                 print_indented(&explanation, 8);
                 print_indented(&next_steps, 8);
             }
-            Status::Interactive {
-                explanation,
-                menu,
-            } => {
+            Status::Interactive { explanation, menu } => {
                 println!("✗");
                 print_indented(&explanation, 8);
                 prompt_menu(menu)?;
@@ -359,4 +327,116 @@ pub fn run_setup() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use tempfile::tempdir;
+
+    fn config_with_env(entries: &[(&str, &str)]) -> Config {
+        let mut env = HashMap::new();
+        for (k, v) in entries {
+            env.insert(k.to_string(), v.to_string());
+        }
+        Config { env, ..Config::default() }
+    }
+
+    #[test]
+    fn parse_system_status_running() {
+        assert!(parse_system_status("status running\n"));
+    }
+
+    #[test]
+    fn parse_system_status_stopped() {
+        assert!(!parse_system_status("status stopped\n"));
+    }
+
+    #[test]
+    fn parse_system_status_unrelated_output() {
+        assert!(!parse_system_status("some random output\n"));
+    }
+
+    #[test]
+    fn decide_auth_literal_api_key() {
+        let config = config_with_env(&[(ANTHROPIC_API_KEY, "sk-test")]);
+        assert!(decide_auth(&config, &|_| None, false));
+    }
+
+    #[test]
+    fn decide_auth_inherited_from_host() {
+        let config = config_with_env(&[(ANTHROPIC_API_KEY, "")]);
+        let host = |k: &str| (k == ANTHROPIC_API_KEY).then(|| "sk-host".to_string());
+        assert!(decide_auth(&config, &host, false));
+    }
+
+    #[test]
+    fn decide_auth_inherited_but_host_unset() {
+        let config = config_with_env(&[(ANTHROPIC_API_KEY, "")]);
+        assert!(!decide_auth(&config, &|_| None, false));
+    }
+
+    #[test]
+    fn decide_auth_credentials_file_only() {
+        let config = Config::default();
+        assert!(decide_auth(&config, &|_| None, true));
+    }
+
+    #[test]
+    fn decide_auth_nothing_configured() {
+        let config = Config::default();
+        assert!(!decide_auth(&config, &|_| None, false));
+    }
+
+    #[test]
+    fn ensure_env_var_creates_section_in_empty_config() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("config.toml");
+        std::fs::write(&path, "").unwrap();
+
+        ensure_env_var_in_config(&path, "MY_KEY").unwrap();
+
+        let result: toml::Value = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(result["env"]["MY_KEY"].as_str(), Some(""));
+    }
+
+    #[test]
+    fn ensure_env_var_is_idempotent() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("config.toml");
+        std::fs::write(&path, "[env]\nMY_KEY = \"existing\"\n").unwrap();
+
+        ensure_env_var_in_config(&path, "MY_KEY").unwrap();
+
+        // Existing value preserved, not overwritten with "".
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("MY_KEY = \"existing\""));
+    }
+
+    #[test]
+    fn ensure_env_var_preserves_comments_and_other_keys() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("config.toml");
+        let original = "# This is my config\n[env]\n# My API key\nEXISTING_KEY = \"value\"\n";
+        std::fs::write(&path, original).unwrap();
+
+        ensure_env_var_in_config(&path, "NEW_KEY").unwrap();
+
+        let result = std::fs::read_to_string(&path).unwrap();
+        assert!(result.contains("# This is my config"));
+        assert!(result.contains("# My API key"));
+        assert!(result.contains("EXISTING_KEY = \"value\""));
+        assert!(result.contains("NEW_KEY"));
+    }
+
+    #[test]
+    fn ensure_env_var_errors_when_env_is_not_a_table() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("config.toml");
+        std::fs::write(&path, "env = \"oops\"\n").unwrap();
+
+        let err = ensure_env_var_in_config(&path, "MY_KEY").unwrap_err();
+        assert!(err.to_string().contains("not a table"));
+    }
 }
