@@ -161,6 +161,23 @@ pub fn format_uptime(elapsed_secs: i64) -> String {
     }
 }
 
+/// Format a byte count as a compact string. GiB use one decimal place;
+/// smaller units are integers. Used in cell rendering and totals.
+pub fn format_mem(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = KIB * 1024;
+    const GIB: u64 = MIB * 1024;
+    if bytes >= GIB {
+        format!("{:.1}G", bytes as f64 / GIB as f64)
+    } else if bytes >= MIB {
+        format!("{}M", bytes / MIB)
+    } else if bytes >= KIB {
+        format!("{}K", bytes / KIB)
+    } else {
+        format!("{}B", bytes)
+    }
+}
+
 /// Top-level entry point: gather rows, print fast pass, then live pass if TTY.
 /// Stub — full implementation lands in Task 9.
 pub fn run(_verbose: bool) -> Result<()> {
@@ -364,5 +381,44 @@ buildkit                     0.01%  1.50 GiB / 2.00 GiB    2.11 GiB / 7.49 MiB  
     #[test]
     fn test_format_uptime_negative_clock_skew() {
         assert_eq!(format_uptime(-5), "0m");
+    }
+
+    #[test]
+    fn test_format_mem_gib() {
+        let two_gib = 2 * 1024u64 * 1024 * 1024;
+        assert_eq!(format_mem(two_gib), "2.0G");
+        let two_point_two_gib = ((2.2 * 1024.0 * 1024.0 * 1024.0) as u64).max(1);
+        assert_eq!(format_mem(two_point_two_gib), "2.2G");
+    }
+
+    #[test]
+    fn test_format_mem_mib() {
+        let half_gib_in_mib = 512 * 1024 * 1024;
+        assert_eq!(format_mem(half_gib_in_mib), "512M");
+        let mib_812 = 812 * 1024 * 1024;
+        assert_eq!(format_mem(mib_812), "812M");
+    }
+
+    #[test]
+    fn test_format_mem_kib() {
+        let kib_512 = 512 * 1024;
+        assert_eq!(format_mem(kib_512), "512K");
+    }
+
+    #[test]
+    fn test_format_mem_bytes() {
+        assert_eq!(format_mem(0), "0B");
+        assert_eq!(format_mem(512), "512B");
+        assert_eq!(format_mem(1023), "1023B");
+    }
+
+    #[test]
+    fn test_format_mem_boundary() {
+        // Exactly 1 KiB = 1024 bytes → "1K"
+        assert_eq!(format_mem(1024), "1K");
+        // Exactly 1 MiB → "1M"
+        assert_eq!(format_mem(1024 * 1024), "1M");
+        // Exactly 1 GiB → "1.0G"
+        assert_eq!(format_mem(1024 * 1024 * 1024), "1.0G");
     }
 }
