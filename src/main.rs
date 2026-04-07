@@ -59,6 +59,8 @@ enum Commands {
         #[command(subcommand)]
         command: ConfigCommands,
     },
+    /// Run the interactive setup wizard
+    Setup,
 }
 
 #[derive(Subcommand)]
@@ -212,7 +214,8 @@ fn check_prerequisites() -> Result<()> {
         Err(_) => {
             anyhow::bail!(
                 "Apple Container CLI is not installed.\n\n\
-                 Install it from: https://github.com/apple/container"
+                 Run `agentbox setup` for guided setup, or install manually from:\n\
+                 https://github.com/apple/container"
             );
         }
     }
@@ -366,6 +369,10 @@ fn main() -> Result<()> {
                 Ok(())
             }
         },
+        Some(Commands::Setup) => {
+            setup::run_setup()?;
+            Ok(())
+        }
         None => {
             let config = config::Config::load()?;
             let cwd = std::env::current_dir()?;
