@@ -205,6 +205,146 @@ pub fn shorten_path(path: &str, home: &Path, max_width: usize) -> String {
     format!("{}…", truncated)
 }
 
+const PROJECT_MAX_WIDTH: usize = 40;
+const HEADERS: [&str; 7] = ["NAME", "STATUS", "PROJECT", "CPU", "MEM", "UPTIME", "SESSIONS"];
+
+/// Render a row as 7 cells of strings.
+fn row_cells(row: &Row, home: &Path, now_unix: i64) -> [String; 7] {
+    let project = shorten_path(&row.workdir, home, PROJECT_MAX_WIDTH);
+    let cpu = match row.cpu_pct {
+        Some(v) => format!("{:.1}%", v),
+        None => "--".to_string(),
+    };
+    let mem = match (row.mem_used, row.mem_total) {
+        (Some(u), Some(t)) => format!("{}/{}", format_mem(u), format_mem(t)),
+        _ => "--".to_string(),
+    };
+    let uptime = match (row.state.clone(), row.started_unix) {
+        (State::Running, Some(start)) => format_uptime(now_unix - start),
+        _ => "--".to_string(),
+    };
+    let sessions = match row.sessions {
+        Some(n) => n.to_string(),
+        None => "-".to_string(),
+    };
+    [
+        row.name.clone(),
+        row.state.as_str().to_string(),
+        project,
+        cpu,
+        mem,
+        uptime,
+        sessions,
+    ]
+}
+
+/// Render the totals row as 7 cells.
+fn totals_cells(rows: &[Row]) -> [String; 7] {
+    let running_count = rows.iter().filter(|r| r.state == State::Running).count();
+    let cpu_sum: f64 = rows.iter().filter_map(|r| r.cpu_pct).sum();
+    let any_cpu = rows.iter().any(|r| r.cpu_pct.is_some());
+    let cpu = if any_cpu {
+        format!("{:.1}%", cpu_sum)
+    } else {
+        "--".to_string()
+    };
+    let used_sum: u64 = rows.iter().filter_map(|r| r.mem_used).sum();
+    let total_sum: u64 = rows.iter().filter_map(|r| r.mem_total).sum();
+    let mem = if total_sum > 0 {
+        format!("{}/{}", format_mem(used_sum), format_mem(total_sum))
+    } else {
+        "--".to_string()
+    };
+    let sessions_sum: usize = rows.iter().filter_map(|r| r.sessions).sum();
+    [
+        "TOTALS".to_string(),
+        format!("{} run", running_count),
+        "-".to_string(),
+        cpu,
+        mem,
+        "-".to_string(),
+        sessions_sum.to_string(),
+    ]
+}
+
+/// Render the full table as a single newline-terminated string.
+/// `current_name` (when Some + `use_color`) bolds the matching row.
+/// `now_unix` is supplied so the function stays pure (testable).
+pub fn format_table(
+    rows: &[Row],
+    current_name: Option<&str>,
+    use_color: bool,
+    home: &Path,
+    now_unix: i64,
+) -> String {
+    // Build all cell strings (header, data rows, totals).
+    let mut all_rows: Vec<[String; 7]> = Vec::new();
+    all_rows.push(HEADERS.map(String::from));
+    for row in rows {
+        all_rows.push(row_cells(row, home, now_unix));
+    }
+    all_rows.push(totals_cells(rows));
+
+    // Compute per-column max widths.
+    let mut widths = [0usize; 7];
+    for r in &all_rows {
+        for (i, cell) in r.iter().enumerate() {
+            let w = cell.chars().count();
+            if w > widths[i] {
+                widths[i] = w;
+            }
+        }
+    }
+
+    // Render rows. Two-space gutter between columns. The last column is
+    // left-aligned without trailing pad.
+    //
+    // Bolding rules: a "data row" is any row that's neither the header (idx
+    // 0) nor the totals (idx data_count + 1). When `use_color` is true and
+    // the data row's name matches `current_name`, wrap the entire line in
+    // ANSI bold (`\x1b[1m` … `\x1b[22m`).
+    let data_count = rows.len();
+    let mut out = String::new();
+    for (idx, r) in all_rows.iter().enumerate() {
+        let mut line = String::new();
+        for (i, cell) in r.iter().enumerate() {
+            if i == r.len() - 1 {
+                line.push_str(cell);
+            } else {
+                line.push_str(&pad_right(cell, widths[i]));
+                line.push_str("  ");
+            }
+        }
+        let is_data_row = idx > 0 && idx <= data_count;
+        let is_current = is_data_row
+            && current_name.map(|cn| r[0] == cn).unwrap_or(false);
+        if use_color && is_current {
+            out.push_str("\x1b[1m");
+            out.push_str(&line);
+            out.push_str("\x1b[22m");
+        } else {
+            out.push_str(&line);
+        }
+        out.push('\n');
+    }
+    out
+}
+
+fn pad_right(s: &str, width: usize) -> String {
+    let len = s.chars().count();
+    if len >= width {
+        s.to_string()
+    } else {
+        let pad = width - len;
+        let mut out = String::with_capacity(s.len() + pad);
+        out.push_str(s);
+        for _ in 0..pad {
+            out.push(' ');
+        }
+        out
+    }
+}
+
 /// Top-level entry point: gather rows, print fast pass, then live pass if TTY.
 /// Stub — full implementation lands in Task 9.
 pub fn run(_verbose: bool) -> Result<()> {
@@ -500,5 +640,140 @@ buildkit                     0.01%  1.50 GiB / 2.00 GiB    2.11 GiB / 7.49 MiB  
         let home = Path::new("/Users/alex");
         // ~/Dev/myapp is 11 chars; max 11 → not ellipsized
         assert_eq!(shorten_path("/Users/alex/Dev/myapp", home, 11), "~/Dev/myapp");
+    }
+
+    fn sample_rows() -> Vec<Row> {
+        vec![
+            Row {
+                name: "agentbox-aaa-111111".to_string(),
+                state: State::Running,
+                workdir: "/Users/alex/Dev/aaa".to_string(),
+                started_unix: Some(1_775_515_789),
+                sessions: Some(1),
+                cpu_pct: Some(7.19),
+                mem_used: Some(2_340_000_000),
+                mem_total: Some(8_589_934_592),
+            },
+            Row {
+                name: "agentbox-bbb-222222".to_string(),
+                state: State::Stopped,
+                workdir: "/Users/alex/Dev/bbb".to_string(),
+                started_unix: Some(1_775_000_000),
+                sessions: Some(0),
+                cpu_pct: None,
+                mem_used: None,
+                mem_total: None,
+            },
+        ]
+    }
+
+    #[test]
+    fn test_format_table_has_header_and_rows_and_totals() {
+        let rows = sample_rows();
+        let home = Path::new("/Users/alex");
+        let now = 1_775_515_789 + 60 * 60 * 2 + 60 * 15; // 2h 15m after start
+        let table = format_table(&rows, None, false, home, now);
+        assert!(table.contains("NAME"));
+        assert!(table.contains("STATUS"));
+        assert!(table.contains("PROJECT"));
+        assert!(table.contains("CPU"));
+        assert!(table.contains("MEM"));
+        assert!(table.contains("UPTIME"));
+        assert!(table.contains("SESSIONS"));
+        assert!(table.contains("agentbox-aaa-111111"));
+        assert!(table.contains("agentbox-bbb-222222"));
+        assert!(table.contains("TOTALS"));
+    }
+
+    #[test]
+    fn test_format_table_running_shows_live_data() {
+        let rows = sample_rows();
+        let home = Path::new("/Users/alex");
+        let table = format_table(&rows, None, false, home, 1_775_515_789 + 60 * 75);
+        assert!(table.contains("7.2%"));
+        assert!(table.contains("2h 15m") || table.contains("1h 15m"));
+    }
+
+    #[test]
+    fn test_format_table_stopped_shows_dashes() {
+        let rows = sample_rows();
+        let home = Path::new("/Users/alex");
+        let table = format_table(&rows, None, false, home, 0);
+        // Find the bbb row line
+        let bbb_line = table.lines().find(|l| l.contains("agentbox-bbb-222222")).unwrap();
+        // CPU and MEM and UPTIME cells should be "--"
+        assert!(bbb_line.contains("--"));
+    }
+
+    #[test]
+    fn test_format_table_fast_pass_cpu_mem_dashes() {
+        let mut rows = sample_rows();
+        // Simulate fast pass: clear live fields
+        rows[0].cpu_pct = None;
+        rows[0].mem_used = None;
+        rows[0].mem_total = None;
+        let home = Path::new("/Users/alex");
+        let table = format_table(&rows, None, false, home, 1_775_515_789 + 60 * 75);
+        let aaa_line = table.lines().find(|l| l.contains("agentbox-aaa-111111")).unwrap();
+        // No CPU% number visible for the running row in the fast pass
+        assert!(!aaa_line.contains("7.2%"));
+        assert!(aaa_line.contains("--"));
+    }
+
+    #[test]
+    fn test_format_table_bolds_current_row_when_color_enabled() {
+        let rows = sample_rows();
+        let home = Path::new("/Users/alex");
+        let table = format_table(
+            &rows,
+            Some("agentbox-aaa-111111"),
+            true,
+            home,
+            1_775_515_789 + 60 * 75,
+        );
+        let aaa_line = table.lines().find(|l| l.contains("agentbox-aaa-111111")).unwrap();
+        assert!(aaa_line.contains("\x1b[1m"));
+        assert!(aaa_line.contains("\x1b[22m"));
+    }
+
+    #[test]
+    fn test_format_table_no_bolding_when_color_disabled() {
+        let rows = sample_rows();
+        let home = Path::new("/Users/alex");
+        let table = format_table(
+            &rows,
+            Some("agentbox-aaa-111111"),
+            false,
+            home,
+            1_775_515_789 + 60 * 75,
+        );
+        assert!(!table.contains("\x1b[1m"));
+        assert!(!table.contains("\x1b[22m"));
+    }
+
+    #[test]
+    fn test_format_table_no_bolding_when_no_current() {
+        let rows = sample_rows();
+        let home = Path::new("/Users/alex");
+        let table = format_table(&rows, None, true, home, 1_775_515_789 + 60 * 75);
+        assert!(!table.contains("\x1b[1m"));
+    }
+
+    #[test]
+    fn test_format_table_totals_running_count() {
+        let rows = sample_rows();
+        let home = Path::new("/Users/alex");
+        let table = format_table(&rows, None, false, home, 1_775_515_789 + 60 * 75);
+        let totals_line = table.lines().find(|l| l.contains("TOTALS")).unwrap();
+        // 1 running container in sample
+        assert!(totals_line.contains("1 run"));
+    }
+
+    #[test]
+    fn test_format_table_empty_still_renders_header_and_totals() {
+        let home = Path::new("/Users/alex");
+        let table = format_table(&[], None, false, home, 0);
+        assert!(table.contains("NAME"));
+        assert!(table.contains("TOTALS"));
     }
 }
