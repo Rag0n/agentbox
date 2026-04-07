@@ -116,6 +116,66 @@ fn check_config_file() -> Status {
     }
 }
 
+/// Pure function that decides whether authentication is reachable.
+/// Separated for testing purposes.
+fn decide_auth(
+    config: &Config,
+    host_env: &dyn Fn(&str) -> Option<String>,
+    credentials_exists: bool,
+) -> bool {
+    // Check for literal non-empty values in config
+    if let Some(val) = config.env.get("ANTHROPIC_API_KEY") {
+        if !val.is_empty() {
+            return true;
+        }
+    }
+    if let Some(val) = config.env.get("CLAUDE_CODE_OAUTH_TOKEN") {
+        if !val.is_empty() {
+            return true;
+        }
+    }
+
+    // Check for empty (inherit) in config + host env
+    if let Some(val) = config.env.get("ANTHROPIC_API_KEY") {
+        if val.is_empty() && host_env("ANTHROPIC_API_KEY").is_some() {
+            return true;
+        }
+    }
+    if let Some(val) = config.env.get("CLAUDE_CODE_OAUTH_TOKEN") {
+        if val.is_empty() && host_env("CLAUDE_CODE_OAUTH_TOKEN").is_some() {
+            return true;
+        }
+    }
+
+    // Check for on-disk credentials
+    credentials_exists
+}
+
+/// Idempotently add a key to the [env] section of the config file.
+/// Uses toml_edit to preserve comments and formatting.
+/// If the key already exists, this is a no-op.
+fn ensure_env_var_in_config(key: &str) -> Result<()> {
+    use toml_edit::{value, table, DocumentMut};
+
+    let path = Config::config_path();
+    let content = std::fs::read_to_string(&path)?;
+    let mut doc: DocumentMut = content.parse()?;
+
+    let env_tbl = match doc.entry("env").or_insert(table()).as_table_mut() {
+        Some(t) => t,
+        None => anyhow::bail!("'env' in config is not a table"),
+    };
+
+    // Idempotent: if key already exists, do nothing
+    if env_tbl.contains_key(key) {
+        return Ok(());
+    }
+
+    env_tbl.insert(key, value(""));
+    std::fs::write(&path, doc.to_string())?;
+    Ok(())
+}
+
 fn check_authentication() -> Status {
     unimplemented!()
 }
