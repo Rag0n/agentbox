@@ -7,6 +7,7 @@ mod container;
 mod git;
 mod hostexec;
 mod image;
+mod setup;
 
 #[derive(Parser)]
 #[command(
