@@ -40,15 +40,80 @@ pub struct MenuOption {
 }
 
 fn check_container_cli() -> Status {
-    unimplemented!()
+    match Command::new("container")
+        .arg("--version")
+        .output()
+    {
+        Ok(_) => Status::Ok,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Status::Manual {
+                explanation: "Apple Container CLI is not installed or not on PATH.".to_string(),
+                next_steps: "Download and install from: https://github.com/apple/container/releases".to_string(),
+            }
+        }
+        Err(e) => Status::Errored(anyhow::anyhow!("Failed to check container CLI: {}", e)),
+    }
+}
+
+/// Parse `container system status` output and check if the system is running.
+/// Looking for a line that matches: "status running"
+fn parse_system_status(stdout: &str) -> bool {
+    stdout
+        .lines()
+        .any(|line| {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            parts.len() == 2 && parts[0] == "status" && parts[1] == "running"
+        })
 }
 
 fn check_container_system() -> Status {
-    unimplemented!()
+    match Command::new("container")
+        .args(["system", "status"])
+        .output()
+    {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if parse_system_status(&stdout) {
+                Status::Ok
+            } else {
+                Status::AutoFix {
+                    explanation: "Container system is not running. Starting it...".to_string(),
+                    fix: Box::new(|| {
+                        let status = Command::new("container")
+                            .args(["system", "start"])
+                            .stdin(std::process::Stdio::inherit())
+                            .stdout(std::process::Stdio::inherit())
+                            .stderr(std::process::Stdio::inherit())
+                            .status()
+                            .context("failed to run 'container system start'")?;
+                        if status.success() {
+                            Ok(())
+                        } else {
+                            anyhow::bail!("container system start exited with non-zero status")
+                        }
+                    }),
+                }
+            }
+        }
+        Err(e) => Status::Errored(anyhow::anyhow!("Failed to check container system: {}", e)),
+    }
 }
 
 fn check_config_file() -> Status {
-    unimplemented!()
+    if Config::config_path().exists() {
+        Status::Ok
+    } else {
+        Status::AutoFix {
+            explanation: "Config file does not exist. Creating it from the default template...".to_string(),
+            fix: Box::new(|| {
+                let config_path = Config::config_path();
+                let parent = config_path.parent().context("config path has no parent")?;
+                std::fs::create_dir_all(parent)?;
+                std::fs::write(&config_path, Config::init_template())?;
+                Ok(())
+            }),
+        }
+    }
 }
 
 fn check_authentication() -> Status {
