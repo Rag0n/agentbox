@@ -176,8 +176,93 @@ fn ensure_env_var_in_config(key: &str) -> Result<()> {
     Ok(())
 }
 
+const AUTH_EXPLANATION: &str = r#"macOS Keychain isn't reachable from the Linux container, so
+Claude Code needs credentials via env var, or a one-time login
+from inside the container (the token persists under ~/.claude)."#;
+
+fn build_auth_menu() -> Vec<MenuOption> {
+    vec![
+        MenuOption {
+            label: "Log in interactively inside the container (recommended for Pro/Max)",
+            action: Box::new(|| {
+                println!("\n        Next step: run `agentbox`, then inside Claude type `/login`.");
+                println!("        Your token will be saved under ~/.claude and persist across sessions.");
+                Ok(())
+            }),
+        },
+        MenuOption {
+            label: "Use an API key (ANTHROPIC_API_KEY)",
+            action: Box::new(|| {
+                println!("\n        Run this in your shell (and add it to ~/.zshrc / ~/.bashrc for next time):");
+                println!("\n            export ANTHROPIC_API_KEY=\"sk-...\"");
+                println!("\n        Add `ANTHROPIC_API_KEY = \"\"` under [env] in your config automatically? [Y/n]");
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
+                if input.trim().is_empty() || input.trim().eq_ignore_ascii_case("y") {
+                    ensure_env_var_in_config("ANTHROPIC_API_KEY")?;
+                    println!("        ✓ Updated ~/.config/agentbox/config.toml");
+                    println!("        Then re-run `agentbox setup` in a new shell to confirm.");
+                }
+                Ok(())
+            }),
+        },
+        MenuOption {
+            label: "Use a long-lived OAuth token (CLAUDE_CODE_OAUTH_TOKEN)",
+            action: Box::new(|| {
+                println!("\n        Requires the host `claude` CLI. Run this on your Mac first:");
+                println!("\n            claude setup-token");
+                println!("\n        Copy the token, then run in your shell (and add it to ~/.zshrc / ~/.bashrc):");
+                println!("\n            export CLAUDE_CODE_OAUTH_TOKEN=\"your-token-here\"");
+                println!("\n        Add `CLAUDE_CODE_OAUTH_TOKEN = \"\"` under [env] in your config automatically? [Y/n]");
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
+                if input.trim().is_empty() || input.trim().eq_ignore_ascii_case("y") {
+                    ensure_env_var_in_config("CLAUDE_CODE_OAUTH_TOKEN")?;
+                    println!("        ✓ Updated ~/.config/agentbox/config.toml");
+                    println!("        Then re-run `agentbox setup` in a new shell to confirm.");
+                }
+                Ok(())
+            }),
+        },
+        MenuOption {
+            label: "Skip for now",
+            action: Box::new(|| {
+                println!("\n        You can re-run `agentbox setup` at any time to set up authentication.");
+                Ok(())
+            }),
+        },
+    ]
+}
+
 fn check_authentication() -> Status {
-    unimplemented!()
+    let config = match Config::load() {
+        Ok(c) => c,
+        Err(e) => return Status::Errored(e),
+    };
+
+    let host_env = |key: &str| std::env::var(key).ok();
+    let credentials_path = dirs::home_dir()
+        .map(|h| h.join(".claude/.credentials.json"))
+        .and_then(|p| {
+            std::fs::metadata(&p).ok().and_then(|m| {
+                if m.len() > 0 {
+                    Some(p)
+                } else {
+                    None
+                }
+            })
+        });
+
+    let credentials_exists = credentials_path.is_some();
+
+    if decide_auth(&config, &host_env, credentials_exists) {
+        Status::Ok
+    } else {
+        Status::Interactive {
+            explanation: AUTH_EXPLANATION.to_string(),
+            menu: build_auth_menu(),
+        }
+    }
 }
 
 pub fn run_setup() -> Result<()> {
