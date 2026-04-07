@@ -114,26 +114,42 @@ fn parse_status(json: &serde_json::Value) -> ContainerStatus {
     }
 }
 
+/// Returns true if a `ps -eo pid,args` row represents a `container exec`
+/// or `container run` invocation that references the given container name.
+/// The always-on `container-runtime-linux` process does not match because
+/// it does not contain `container exec` or `container run`.
+fn matches_session(line: &str, container_name: &str) -> Option<u32> {
+    let trimmed = line.trim();
+    let (pid_str, args) = trimmed.split_once(char::is_whitespace)?;
+    let pid: u32 = pid_str.trim().parse().ok()?;
+    let is_session = (args.contains("container exec") || args.contains("container run"))
+        && args.contains(container_name);
+    if is_session {
+        Some(pid)
+    } else {
+        None
+    }
+}
+
 /// Check if other processes are using the same container.
-/// Parses `ps -eo pid,args` output, looking for `container` processes
-/// that reference the given container name, excluding our own PID.
+/// Parses `ps -eo pid,args` output, looking for `container exec` or
+/// `container run` rows that reference the given container name,
+/// excluding our own PID.
 pub fn has_other_sessions(ps_output: &str, container_name: &str, our_pid: u32) -> bool {
-    ps_output.lines().any(|line| {
-        let trimmed = line.trim();
-        let (pid_str, args) = match trimmed.split_once(char::is_whitespace) {
-            Some((p, a)) => (p.trim(), a),
-            None => return false,
-        };
-        let pid: u32 = match pid_str.parse() {
-            Ok(p) => p,
-            Err(_) => return false,
-        };
-        if pid == our_pid {
-            return false;
-        }
-        (args.contains("container exec") || args.contains("container run"))
-            && args.contains(container_name)
-    })
+    ps_output
+        .lines()
+        .filter_map(|line| matches_session(line, container_name))
+        .any(|pid| pid != our_pid)
+}
+
+/// Count attached sessions for a container by parsing `ps -eo pid,args`.
+/// Counts every `container exec` / `container run` row that references the
+/// container name. Used by `agentbox status` to populate the SESSIONS column.
+pub fn count_sessions(ps_output: &str, container_name: &str) -> usize {
+    ps_output
+        .lines()
+        .filter_map(|line| matches_session(line, container_name))
+        .count()
 }
 
 /// Stop the container if no other agentbox sessions are attached to it.
@@ -581,6 +597,36 @@ mod tests {
     fn test_has_other_sessions_run_command() {
         let ps_output = "  PID ARGS\n  100 container run --name agentbox-myapp-abc123 --cpus 4 agentbox:default\n";
         assert!(has_other_sessions(ps_output, "agentbox-myapp-abc123", 999));
+    }
+
+    #[test]
+    fn test_count_sessions_zero() {
+        let ps_output = "  PID ARGS\n  100 vim main.rs\n";
+        assert_eq!(count_sessions(ps_output, "agentbox-myapp-abc123"), 0);
+    }
+
+    #[test]
+    fn test_count_sessions_one() {
+        let ps_output = "  PID ARGS\n  100 container exec --tty agentbox-myapp-abc123 bash\n";
+        assert_eq!(count_sessions(ps_output, "agentbox-myapp-abc123"), 1);
+    }
+
+    #[test]
+    fn test_count_sessions_multiple() {
+        let ps_output = "  PID ARGS\n  100 container exec --tty agentbox-myapp-abc123 bash\n  200 container exec agentbox-myapp-abc123 bash -lc claude\n  300 container run --name agentbox-myapp-abc123 --cpus 4 agentbox:default\n";
+        assert_eq!(count_sessions(ps_output, "agentbox-myapp-abc123"), 3);
+    }
+
+    #[test]
+    fn test_count_sessions_ignores_runtime_process() {
+        let ps_output = "  PID ARGS\n  100 /usr/local/libexec/container/plugins/container-runtime-linux/bin/container-runtime-linux start --root /Users/alex/Library/Application Support/com.apple.container/containers/agentbox-myapp-abc123 --uuid agentbox-myapp-abc123\n";
+        assert_eq!(count_sessions(ps_output, "agentbox-myapp-abc123"), 0);
+    }
+
+    #[test]
+    fn test_count_sessions_different_container() {
+        let ps_output = "  PID ARGS\n  100 container exec --tty agentbox-other-def456 bash\n";
+        assert_eq!(count_sessions(ps_output, "agentbox-myapp-abc123"), 0);
     }
 
     #[test]
