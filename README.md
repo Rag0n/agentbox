@@ -31,8 +31,9 @@ agentbox
 # Run a task headlessly
 agentbox "fix the failing tests"
 
-# List all containers
-agentbox ls
+# Show container status (CPU, memory, project, sessions)
+agentbox status
+# `agentbox ls` is an alias for `status`
 
 # Remove current project's container
 agentbox rm
