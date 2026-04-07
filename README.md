@@ -25,6 +25,11 @@ mv agentbox ~/.local/bin/
 ## Quick Start
 
 ```bash
+# First time? Run setup to check prerequisites and configure authentication
+agentbox setup
+
+# Then use agentbox normally:
+
 # Start interactive Claude session in current project
 agentbox
 
@@ -130,7 +135,11 @@ agentbox --profile mystack
 
 ## Authentication
 
-On macOS, Claude Code stores OAuth tokens in the macOS Keychain — which is not accessible from inside a Linux container. You need to provide credentials via environment variable.
+macOS Keychain isn't accessible from inside the Linux container, so Claude Code needs credentials passed via environment variables, or a one-time login from inside the container (which persists under `~/.claude/`).
+
+**Easiest approach: Run `agentbox setup`** — it will guide you through the options.
+
+Alternatively, here are the three methods:
 
 **Option A: API key** — set `ANTHROPIC_API_KEY` in your config or shell:
 

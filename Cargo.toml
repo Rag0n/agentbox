@@ -20,3 +20,7 @@ tokio-tungstenite = "0.24"
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 rand = "0.8"
 libc = "0.2"
+toml_edit = "0.22"
+
+[dev-dependencies]
+tempfile = "3.8"
