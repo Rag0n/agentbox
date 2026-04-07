@@ -142,6 +142,25 @@ pub fn parse_stats_text(text: &str) -> HashMap<String, (f64, u64, u64)> {
     out
 }
 
+/// Format a number of elapsed seconds as a compact uptime string.
+/// Returns "0m" for zero, sub-minute, or negative durations (clock skew).
+pub fn format_uptime(elapsed_secs: i64) -> String {
+    if elapsed_secs <= 0 {
+        return "0m".to_string();
+    }
+    let secs = elapsed_secs as u64;
+    let days = secs / 86400;
+    let hours = (secs % 86400) / 3600;
+    let mins = (secs % 3600) / 60;
+    if days > 0 {
+        format!("{}d {}h", days, hours)
+    } else if hours > 0 {
+        format!("{}h {}m", hours, mins)
+    } else {
+        format!("{}m", mins)
+    }
+}
+
 /// Top-level entry point: gather rows, print fast pass, then live pass if TTY.
 /// Stub — full implementation lands in Task 9.
 pub fn run(_verbose: bool) -> Result<()> {
@@ -313,5 +332,37 @@ buildkit                     0.01%  1.50 GiB / 2.00 GiB    2.11 GiB / 7.49 MiB  
         assert_eq!(parse_mem_value("0.5", "GiB"), Some(512 * 1024 * 1024));
         assert_eq!(parse_mem_value("1", "PiB"), None);
         assert_eq!(parse_mem_value("notanumber", "GiB"), None);
+    }
+
+    #[test]
+    fn test_format_uptime_seconds() {
+        assert_eq!(format_uptime(0), "0m");
+        assert_eq!(format_uptime(45), "0m");
+        assert_eq!(format_uptime(60), "1m");
+        assert_eq!(format_uptime(59), "0m");
+    }
+
+    #[test]
+    fn test_format_uptime_minutes() {
+        assert_eq!(format_uptime(60 * 45), "45m");
+        assert_eq!(format_uptime(60 * 59), "59m");
+    }
+
+    #[test]
+    fn test_format_uptime_hours() {
+        assert_eq!(format_uptime(60 * 60), "1h 0m");
+        assert_eq!(format_uptime(60 * 60 * 2 + 60 * 15), "2h 15m");
+        assert_eq!(format_uptime(60 * 60 * 23 + 60 * 59), "23h 59m");
+    }
+
+    #[test]
+    fn test_format_uptime_days() {
+        assert_eq!(format_uptime(60 * 60 * 24), "1d 0h");
+        assert_eq!(format_uptime(60 * 60 * 24 * 3 + 60 * 60 * 4), "3d 4h");
+    }
+
+    #[test]
+    fn test_format_uptime_negative_clock_skew() {
+        assert_eq!(format_uptime(-5), "0m");
     }
 }
