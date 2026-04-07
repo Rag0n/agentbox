@@ -82,6 +82,66 @@ pub fn parse_ls_json(json: &str) -> Vec<Row> {
     rows
 }
 
+/// Parse a memory value like "2.18" with unit "GiB" into bytes.
+/// Returns None on unrecognized unit.
+fn parse_mem_value(value: &str, unit: &str) -> Option<u64> {
+    let v: f64 = value.parse().ok()?;
+    let mult: f64 = match unit {
+        "B" => 1.0,
+        "KiB" => 1024.0,
+        "MiB" => 1024.0 * 1024.0,
+        "GiB" => 1024.0 * 1024.0 * 1024.0,
+        "TiB" => 1024.0 * 1024.0 * 1024.0 * 1024.0,
+        _ => return None,
+    };
+    Some((v * mult) as u64)
+}
+
+/// Parse `container stats --no-stream` text output. Returns a map from
+/// container name to (cpu_pct, mem_used_bytes, mem_total_bytes).
+///
+/// The expected row layout (18 whitespace-separated tokens) is:
+///
+/// ```text
+/// [0]      name
+/// [1]      cpu_pct           e.g. "7.19%"
+/// [2..7]   mem               5 tokens: "2.18", "GiB", "/", "8.00", "GiB"
+/// [7..12]  net_rx_tx         5 tokens (ignored)
+/// [12..17] block_io          5 tokens (ignored)
+/// [17]     pids              (ignored)
+/// ```
+///
+/// Defensive: any row with fewer than 18 tokens is skipped — this
+/// naturally excludes Apple's header row (`Container ID  Cpu %  ...`)
+/// which has only 11 tokens. Caller is responsible for filtering to
+/// agentbox-* names.
+pub fn parse_stats_text(text: &str) -> HashMap<String, (f64, u64, u64)> {
+    let mut out = HashMap::new();
+    for line in text.lines() {
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        if tokens.len() < 18 {
+            continue;
+        }
+        let name = tokens[0].to_string();
+        let cpu_str = tokens[1].trim_end_matches('%');
+        let cpu_pct: f64 = match cpu_str.parse() {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let mem_used = match parse_mem_value(tokens[2], tokens[3]) {
+            Some(v) => v,
+            None => continue,
+        };
+        // tokens[4] is "/"
+        let mem_total = match parse_mem_value(tokens[5], tokens[6]) {
+            Some(v) => v,
+            None => continue,
+        };
+        out.insert(name, (cpu_pct, mem_used, mem_total));
+    }
+    out
+}
+
 /// Top-level entry point: gather rows, print fast pass, then live pass if TTY.
 /// Stub — full implementation lands in Task 9.
 pub fn run(_verbose: bool) -> Result<()> {
@@ -190,5 +250,68 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].state, State::Running);
         assert_eq!(rows[1].state, State::Stopped);
+    }
+
+    const STATS_TEXT_SAMPLE: &str = "\
+Container ID                 Cpu %  Memory Usage           Net Rx/Tx                Block I/O                Pids
+agentbox-agentbox-71e6bc     7.19%  2.18 GiB / 8.00 GiB    28.20 MiB / 19.53 MiB    819.63 MiB / 146.74 MiB  83
+agentbox-marketplace-ad3430  2.52%  771.08 MiB / 8.00 GiB  311.84 KiB / 351.12 KiB  394.19 MiB / 168.00 KiB  40
+buildkit                     0.01%  1.50 GiB / 2.00 GiB    2.11 GiB / 7.49 MiB      14.32 GiB / 19.17 GiB    21";
+
+    #[test]
+    fn test_parse_stats_text_three_rows() {
+        let map = parse_stats_text(STATS_TEXT_SAMPLE);
+        assert_eq!(map.len(), 3);
+        let (cpu, used, total) = map["agentbox-agentbox-71e6bc"];
+        assert!((cpu - 7.19).abs() < 0.001);
+        // 2.18 GiB = 2.18 * 1024^3 bytes
+        assert_eq!(used, (2.18 * 1024.0 * 1024.0 * 1024.0) as u64);
+        // 8.00 GiB = 8 * 1024^3
+        assert_eq!(total, 8 * 1024 * 1024 * 1024);
+
+        let (cpu2, used2, _total2) = map["agentbox-marketplace-ad3430"];
+        assert!((cpu2 - 2.52).abs() < 0.001);
+        // 771.08 MiB
+        assert_eq!(used2, (771.08 * 1024.0 * 1024.0) as u64);
+    }
+
+    #[test]
+    fn test_parse_stats_text_skips_header() {
+        let text = "Container ID  Cpu %  Memory Usage  Net Rx/Tx  Block I/O  Pids";
+        let map = parse_stats_text(text);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_parse_stats_text_empty_input() {
+        assert!(parse_stats_text("").is_empty());
+    }
+
+    #[test]
+    fn test_parse_stats_text_skips_malformed_row() {
+        // 18-token row with a bad CPU value — exercises the cpu_str.parse()
+        // error branch, not just the length guard.
+        let text = "agentbox-foo-aaaaaa  bogus%  1.00 GiB / 1.00 GiB  0.00 B / 0.00 B  0.00 B / 0.00 B  1";
+        assert!(parse_stats_text(text).is_empty());
+    }
+
+    #[test]
+    fn test_parse_stats_text_kib_unit() {
+        let text = "agentbox-x-aaaaaa  0.01%  512.00 KiB / 1.00 MiB  0.00 B / 0.00 B  0.00 B / 0.00 B  1";
+        let map = parse_stats_text(text);
+        let (_, used, total) = map["agentbox-x-aaaaaa"];
+        assert_eq!(used, 512 * 1024);
+        assert_eq!(total, 1024 * 1024);
+    }
+
+    #[test]
+    fn test_parse_mem_value_units() {
+        assert_eq!(parse_mem_value("1", "B"), Some(1));
+        assert_eq!(parse_mem_value("1", "KiB"), Some(1024));
+        assert_eq!(parse_mem_value("1", "MiB"), Some(1024 * 1024));
+        assert_eq!(parse_mem_value("1", "GiB"), Some(1024 * 1024 * 1024));
+        assert_eq!(parse_mem_value("0.5", "GiB"), Some(512 * 1024 * 1024));
+        assert_eq!(parse_mem_value("1", "PiB"), None);
+        assert_eq!(parse_mem_value("notanumber", "GiB"), None);
     }
 }
