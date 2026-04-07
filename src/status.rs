@@ -1,6 +1,9 @@
 use anyhow::Result;
 use std::collections::HashMap;
+use std::io::{self, IsTerminal, Write};
 use std::path::Path;
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Row {
@@ -345,9 +348,150 @@ fn pad_right(s: &str, width: usize) -> String {
     }
 }
 
-/// Top-level entry point: gather rows, print fast pass, then live pass if TTY.
-/// Stub — full implementation lands in Task 9.
-pub fn run(_verbose: bool) -> Result<()> {
+/// Apply session counts to rows by parsing `ps -eo pid,args` output.
+pub fn apply_sessions_to_rows(rows: &mut [Row], ps_output: &str) {
+    for row in rows.iter_mut() {
+        row.sessions = Some(crate::container::count_sessions(ps_output, &row.name));
+    }
+}
+
+/// Mark non-Running rows whose workdir no longer exists on the host as Stale.
+pub fn apply_stale_to_rows(rows: &mut [Row]) {
+    for row in rows.iter_mut() {
+        if row.state == State::Running {
+            continue;
+        }
+        if !row.workdir.is_empty() && !Path::new(&row.workdir).exists() {
+            row.state = State::Stale;
+        }
+    }
+}
+
+/// Merge a stats map into the rows. Only populates Running rows when
+/// there is a matching entry in `stats`. Non-Running rows are left
+/// alone. Rows whose names aren't in `stats` are also left alone — in
+/// the production flow they always arrive with `cpu_pct: None` from
+/// `parse_ls_json`, so unmatched rows naturally render as `--`.
+pub fn merge_stats_into_rows(rows: &mut [Row], stats: &HashMap<String, (f64, u64, u64)>) {
+    for row in rows.iter_mut() {
+        if row.state != State::Running {
+            continue;
+        }
+        if let Some(&(cpu, used, total)) = stats.get(&row.name) {
+            row.cpu_pct = Some(cpu);
+            row.mem_used = Some(used);
+            row.mem_total = Some(total);
+        }
+    }
+}
+
+/// Move the cursor up `n` lines and clear from cursor to end of screen.
+fn ansi_redraw_prefix(n: usize) -> String {
+    if n == 0 {
+        "\x1b[J".to_string()
+    } else {
+        format!("\x1b[{}A\x1b[J", n)
+    }
+}
+
+/// Fetch the basic (fast) data: container ls JSON, ps output, stale check.
+fn fetch_basic(verbose: bool) -> Result<Vec<Row>> {
+    if verbose {
+        eprintln!("[agentbox] container ls --all --format json");
+    }
+    let output = Command::new("container")
+        .args(["ls", "--all", "--format", "json"])
+        .output()
+        .map_err(|e| anyhow::anyhow!("failed to run 'container ls': {}", e))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut rows = parse_ls_json(&stdout);
+
+    // Sessions
+    let ps_out = Command::new("ps").args(["-eo", "pid,args"]).output();
+    if let Ok(ps_out) = ps_out {
+        let ps_text = String::from_utf8_lossy(&ps_out.stdout);
+        apply_sessions_to_rows(&mut rows, &ps_text);
+    }
+    // Note: if ps fails, sessions stay None — column shows "-".
+
+    // Stale detection
+    apply_stale_to_rows(&mut rows);
+    Ok(rows)
+}
+
+/// Fetch live stats from `container stats --no-stream` and merge into rows.
+/// Blocks ~2 seconds (Apple's hardcoded sample interval). Returns Err if
+/// the subprocess fails — caller should leave the fast table on screen.
+fn fetch_live(rows: &mut [Row], verbose: bool) -> Result<()> {
+    if verbose {
+        eprintln!("[agentbox] container stats --no-stream");
+    }
+    let output = Command::new("container")
+        .args(["stats", "--no-stream"])
+        .output()
+        .map_err(|e| anyhow::anyhow!("failed to run 'container stats': {}", e))?;
+    if !output.status.success() {
+        anyhow::bail!("container stats exited with non-zero status");
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let stats = parse_stats_text(&text);
+    merge_stats_into_rows(rows, &stats);
+    Ok(())
+}
+
+fn now_unix() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Top-level entry point: fast pass, then progressive live pass if TTY.
+pub fn run(verbose: bool) -> Result<()> {
+    let mut rows = fetch_basic(verbose)?;
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
+
+    // Determine "current project" by computing the same name agentbox would
+    // use for cwd. We tolerate failures here — bolding is best-effort.
+    let current_name = std::env::current_dir()
+        .ok()
+        .map(|cwd| crate::container::container_name(&cwd.to_string_lossy()));
+    let current_ref = current_name.as_deref();
+
+    let stdout = io::stdout();
+    let is_tty = stdout.is_terminal();
+    let use_color = is_tty && std::env::var_os("NO_COLOR").is_none();
+
+    let now = now_unix();
+    let table = format_table(&rows, current_ref, use_color, &home, now);
+    {
+        let mut handle = stdout.lock();
+        handle.write_all(table.as_bytes())?;
+        handle.flush()?;
+    }
+
+    if !is_tty {
+        return Ok(());
+    }
+    let any_running = rows.iter().any(|r| r.state == State::Running);
+    if !any_running {
+        return Ok(());
+    }
+
+    // Live pass — best-effort. ~2s blocking call.
+    if fetch_live(&mut rows, verbose).is_err() {
+        return Ok(());
+    }
+    let now2 = now_unix();
+    let table2 = format_table(&rows, current_ref, use_color, &home, now2);
+
+    // Move cursor up over the previously printed table and clear to end.
+    // Line count = header + data rows + totals = rows.len() + 2
+    let line_count = rows.len() + 2;
+    let mut handle = stdout.lock();
+    handle.write_all(ansi_redraw_prefix(line_count).as_bytes())?;
+    handle.write_all(table2.as_bytes())?;
+    handle.flush()?;
     Ok(())
 }
 
@@ -775,5 +919,114 @@ buildkit                     0.01%  1.50 GiB / 2.00 GiB    2.11 GiB / 7.49 MiB  
         let table = format_table(&[], None, false, home, 0);
         assert!(table.contains("NAME"));
         assert!(table.contains("TOTALS"));
+    }
+
+    #[test]
+    fn test_merge_stats_into_rows_populates_running() {
+        let mut rows = sample_rows();
+        let mut stats = HashMap::new();
+        stats.insert(
+            "agentbox-aaa-111111".to_string(),
+            (3.5, 1_000_000_000u64, 4_000_000_000u64),
+        );
+        merge_stats_into_rows(&mut rows, &stats);
+        assert_eq!(rows[0].cpu_pct, Some(3.5));
+        assert_eq!(rows[0].mem_used, Some(1_000_000_000));
+        assert_eq!(rows[0].mem_total, Some(4_000_000_000));
+    }
+
+    #[test]
+    fn test_merge_stats_into_rows_skips_stopped() {
+        let mut rows = sample_rows();
+        let mut stats = HashMap::new();
+        stats.insert(
+            "agentbox-bbb-222222".to_string(),
+            (1.0, 100u64, 200u64),
+        );
+        merge_stats_into_rows(&mut rows, &stats);
+        // bbb is Stopped — should NOT be populated even if present in stats
+        assert_eq!(rows[1].cpu_pct, None);
+    }
+
+    #[test]
+    fn test_merge_stats_into_rows_no_match_leaves_dashes() {
+        // Mirror the production call site: rows arrive from parse_ls_json with
+        // live fields already None. Merging an empty stats map leaves them None.
+        let mut rows = vec![Row {
+            name: "agentbox-aaa-111111".to_string(),
+            state: State::Running,
+            workdir: "/tmp/aaa".to_string(),
+            started_unix: None,
+            sessions: None,
+            cpu_pct: None,
+            mem_used: None,
+            mem_total: None,
+        }];
+        let stats: HashMap<String, (f64, u64, u64)> = HashMap::new();
+        merge_stats_into_rows(&mut rows, &stats);
+        assert_eq!(rows[0].cpu_pct, None);
+        assert_eq!(rows[0].mem_used, None);
+        assert_eq!(rows[0].mem_total, None);
+    }
+
+    #[test]
+    fn test_apply_sessions_to_rows() {
+        let mut rows = sample_rows();
+        let ps = "  PID ARGS\n  100 container exec agentbox-aaa-111111 bash\n  200 container exec agentbox-aaa-111111 bash\n";
+        apply_sessions_to_rows(&mut rows, ps);
+        assert_eq!(rows[0].sessions, Some(2));
+        assert_eq!(rows[1].sessions, Some(0));
+    }
+
+    #[test]
+    fn test_apply_stale_to_rows_marks_missing_workdir() {
+        let mut rows = vec![Row {
+            name: "agentbox-x-aaaaaa".to_string(),
+            state: State::Stopped,
+            workdir: "/definitely/does/not/exist/here/xyz".to_string(),
+            started_unix: None,
+            sessions: None,
+            cpu_pct: None,
+            mem_used: None,
+            mem_total: None,
+        }];
+        apply_stale_to_rows(&mut rows);
+        assert_eq!(rows[0].state, State::Stale);
+    }
+
+    #[test]
+    fn test_apply_stale_to_rows_keeps_running_state_even_if_workdir_missing() {
+        // A running container whose workdir was deleted on the host: still
+        // Running, just stale. We mark stale only for non-Running states to
+        // avoid hiding the fact that something is actively running.
+        let mut rows = vec![Row {
+            name: "agentbox-x-aaaaaa".to_string(),
+            state: State::Running,
+            workdir: "/definitely/does/not/exist/here/xyz".to_string(),
+            started_unix: None,
+            sessions: None,
+            cpu_pct: None,
+            mem_used: None,
+            mem_total: None,
+        }];
+        apply_stale_to_rows(&mut rows);
+        assert_eq!(rows[0].state, State::Running);
+    }
+}
+
+#[cfg(test)]
+mod ansi_tests {
+    use super::*;
+
+    #[test]
+    fn test_ansi_redraw_prefix_nonzero() {
+        let s = ansi_redraw_prefix(5);
+        assert_eq!(s, "\x1b[5A\x1b[J");
+    }
+
+    #[test]
+    fn test_ansi_redraw_prefix_zero() {
+        let s = ansi_redraw_prefix(0);
+        assert_eq!(s, "\x1b[J");
     }
 }
