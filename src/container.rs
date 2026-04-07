@@ -356,27 +356,6 @@ pub fn list_names(verbose: bool) -> Result<Vec<String>> {
     Ok(containers.into_iter().map(|(name, _)| name).collect())
 }
 
-/// List all agentbox containers.
-pub fn list(verbose: bool) -> Result<()> {
-    if verbose {
-        eprintln!("[agentbox] container ls --all --format json");
-    }
-    let output = Command::new("container")
-        .args(["ls", "--all", "--format", "json"])
-        .output()
-        .context("failed to run 'container ls'")?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let containers = parse_container_list(&stdout);
-    if containers.is_empty() {
-        println!("No agentbox containers found.");
-    } else {
-        for (name, state) in &containers {
-            println!("{}\t{}", name, state);
-        }
-    }
-    Ok(())
-}
 
 #[cfg(test)]
 mod tests {

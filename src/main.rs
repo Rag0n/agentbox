@@ -46,8 +46,9 @@ enum Commands {
         #[arg(long)]
         all: bool,
     },
-    /// List all agentbox containers
-    Ls,
+    /// Show rich container status (CPU, memory, project, sessions)
+    #[command(alias = "ls")]
+    Status,
     /// Force rebuild the container image (--no-cache for clean build)
     Build {
         /// Do not use cache when building the image
@@ -332,8 +333,8 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Some(Commands::Ls) => {
-            container::list(cli.verbose)?;
+        Some(Commands::Status) => {
+            status::run(cli.verbose)?;
             Ok(())
         }
         Some(Commands::Build { no_cache }) => {
@@ -523,9 +524,15 @@ mod tests {
     }
 
     #[test]
-    fn test_ls_subcommand() {
+    fn test_status_subcommand() {
+        let cli = Cli::try_parse_from(["agentbox", "status"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Status)));
+    }
+
+    #[test]
+    fn test_status_alias_ls() {
         let cli = Cli::try_parse_from(["agentbox", "ls"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Ls)));
+        assert!(matches!(cli.command, Some(Commands::Status)));
     }
 
 
