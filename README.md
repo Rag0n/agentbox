@@ -36,6 +36,12 @@ agentbox
 # Run a task headlessly
 agentbox "fix the failing tests"
 
+# Open an interactive bash shell in the container (no Claude)
+agentbox shell
+
+# Run a one-shot command in the container
+agentbox shell -- npm test
+
 # Show container status (CPU, memory, project, sessions)
 agentbox status
 # `agentbox ls` is an alias for `status`
@@ -124,6 +130,13 @@ FROM agentbox:default
 
 RUN sudo apt-get update && sudo apt-get install -y nodejs
 ```
+
+> **Note:** `agentbox shell` requires the agentbox entrypoint script for the
+> cold-start case (when the container doesn't yet exist). If your custom
+> Dockerfile uses `FROM agentbox:default`, it works automatically. If your
+> Dockerfile replaces the entrypoint or uses a fully different base image,
+> the cold-start case won't launch a shell — run `agentbox` first to create
+> the container, then `agentbox shell` works via the exec path.
 
 ### Profiles
 
