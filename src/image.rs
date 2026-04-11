@@ -93,8 +93,20 @@ pub fn cache_dir() -> PathBuf {
         .join("agentbox")
 }
 
+/// Build the cache-hash input for a dockerfile. If the Dockerfile bundles the
+/// agentbox entrypoint script (detected by literal `entrypoint.sh` reference),
+/// fold the script's bytes into the input so any future entrypoint change
+/// auto-invalidates the cache.
+fn cache_input(dockerfile_content: &str) -> String {
+    if dockerfile_content.contains("entrypoint.sh") {
+        format!("{}\n--ENTRYPOINT--\n{}", dockerfile_content, ENTRYPOINT_SCRIPT)
+    } else {
+        dockerfile_content.to_string()
+    }
+}
+
 pub fn needs_build(dockerfile_content: &str, cache_key: &str, cache_path: &Path) -> bool {
-    let current_hash = checksum(dockerfile_content);
+    let current_hash = checksum(&cache_input(dockerfile_content));
     let cache_file = cache_path.join(format!("{}.sha256", cache_key));
 
     match std::fs::read_to_string(&cache_file) {
@@ -105,7 +117,7 @@ pub fn needs_build(dockerfile_content: &str, cache_key: &str, cache_path: &Path)
 
 pub fn save_cache(dockerfile_content: &str, cache_key: &str, cache_path: &Path) -> Result<()> {
     std::fs::create_dir_all(cache_path)?;
-    let hash = checksum(dockerfile_content);
+    let hash = checksum(&cache_input(dockerfile_content));
     let cache_file = cache_path.join(format!("{}.sha256", cache_key));
     std::fs::write(&cache_file, &hash)?;
     Ok(())
@@ -507,5 +519,38 @@ mod tests {
     fn test_default_dockerfile_has_hostexec_builder() {
         assert!(DEFAULT_DOCKERFILE.contains("hostexec-builder"));
         assert!(DEFAULT_DOCKERFILE.contains("COPY --from=hostexec-builder"));
+    }
+
+    #[test]
+    fn test_cache_input_includes_entrypoint_when_dockerfile_references_it() {
+        let dockerfile = "FROM debian:bookworm-slim\nCOPY entrypoint.sh /usr/local/bin/\nENTRYPOINT [\"entrypoint.sh\"]";
+        let result = cache_input(dockerfile);
+        assert!(result.contains(ENTRYPOINT_SCRIPT));
+        assert!(result.len() > dockerfile.len());
+    }
+
+    #[test]
+    fn test_cache_input_excludes_entrypoint_when_dockerfile_doesnt_reference_it() {
+        let dockerfile = "FROM debian:bookworm-slim\nCMD [\"sleep\", \"infinity\"]";
+        let result = cache_input(dockerfile);
+        assert_eq!(result, dockerfile);
+    }
+
+    #[test]
+    fn test_needs_build_uses_cache_input_for_default_dockerfile() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Pre-seed cache with the hash of dockerfile alone (the OLD format)
+        let old_hash = checksum(DEFAULT_DOCKERFILE);
+        let cache_file = tmp.path().join("default.sha256");
+        std::fs::write(&cache_file, &old_hash).unwrap();
+        // needs_build should now return true because cache_input incorporates entrypoint too
+        assert!(needs_build(DEFAULT_DOCKERFILE, "default", tmp.path()));
+    }
+
+    #[test]
+    fn test_needs_build_stable_when_cache_matches_combined_hash() {
+        let tmp = tempfile::tempdir().unwrap();
+        save_cache(DEFAULT_DOCKERFILE, "default", tmp.path()).unwrap();
+        assert!(!needs_build(DEFAULT_DOCKERFILE, "default", tmp.path()));
     }
 }
