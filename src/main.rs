@@ -118,10 +118,9 @@ fn create_and_run(
     image_tag: &str,
     workdir: &str,
     config: &config::Config,
-    task: Option<&str>,
+    mode: container::RunMode,
     verbose: bool,
     extra_volumes: &[String],
-    cli_flags: &[String],
     bridge_handle: Option<&bridge::BridgeHandle>,
 ) -> Result<()> {
     let home = dirs::home_dir().context("cannot determine home directory")?;
@@ -188,9 +187,7 @@ fn create_and_run(
         memory: config.memory.clone(),
         env_vars,
         volumes,
-        interactive: task.is_none(),
-        task: task.map(String::from),
-        cli_flags: cli_flags.to_vec(),
+        mode,
     };
 
     container::run(&opts, verbose)
@@ -386,9 +383,13 @@ fn main() -> Result<()> {
                 Some(cli.task.join(" "))
             };
 
-            // Merge config cli flags + CLI passthrough flags
             let mut cli_flags: Vec<String> = config.cli_flags("claude").to_vec();
             cli_flags.extend(passthrough_flags.clone());
+
+            let mode = container::RunMode::Claude {
+                task: task_str,
+                cli_flags,
+            };
 
             // Start bridge if configured
             let bridge_handle = if !config.bridge.allowed_commands.is_empty() {
@@ -418,7 +419,7 @@ fn main() -> Result<()> {
             let result = match container::status(&name)? {
                 container::ContainerStatus::Running => {
                     let env_vars = build_all_env_vars(&config, bridge_handle.as_ref());
-                    container::exec(&name, task_str.as_deref(), &env_vars, &cli_flags, cli.verbose)
+                    container::exec(&name, &mode, &env_vars, cli.verbose)
                 }
                 container::ContainerStatus::Stopped => {
                     let (dockerfile_content, image_tag) =
@@ -435,16 +436,15 @@ fn main() -> Result<()> {
                             &image_tag,
                             &cwd_str,
                             &config,
-                            task_str.as_deref(),
+                            mode.clone(),
                             cli.verbose,
                             &cli.mount,
-                            &cli_flags,
                             bridge_handle.as_ref(),
                         )
                     } else {
                         container::start(&name, cli.verbose)?;
                         let env_vars = build_all_env_vars(&config, bridge_handle.as_ref());
-                        container::exec(&name, task_str.as_deref(), &env_vars, &cli_flags, cli.verbose)
+                        container::exec(&name, &mode, &env_vars, cli.verbose)
                     }
                 }
                 container::ContainerStatus::NotFound => {
@@ -462,10 +462,9 @@ fn main() -> Result<()> {
                         &image_tag,
                         &cwd_str,
                         &config,
-                        task_str.as_deref(),
+                        mode,
                         cli.verbose,
                         &cli.mount,
-                        &cli_flags,
                         bridge_handle.as_ref(),
                     )
                 }

@@ -23,6 +23,27 @@ pub fn container_name(path: &str) -> String {
     format!("agentbox-{}-{}", dir_name, short_hash)
 }
 
+#[derive(Debug, Clone)]
+pub enum RunMode {
+    Claude {
+        task: Option<String>,
+        cli_flags: Vec<String>,
+    },
+    Shell {
+        cmd: Vec<String>,
+    },
+}
+
+impl RunMode {
+    /// Whether this mode should attach a TTY (interactive) or run non-interactively.
+    pub fn is_interactive(&self) -> bool {
+        match self {
+            RunMode::Claude { task, .. } => task.is_none(),
+            RunMode::Shell { cmd } => cmd.is_empty(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct RunOpts {
     pub name: String,
@@ -32,9 +53,7 @@ pub struct RunOpts {
     pub memory: String,
     pub env_vars: Vec<(String, String)>,
     pub volumes: Vec<String>,
-    pub interactive: bool,
-    pub task: Option<String>,
-    pub cli_flags: Vec<String>,
+    pub mode: RunMode,
 }
 
 impl RunOpts {
@@ -47,7 +66,7 @@ impl RunOpts {
         args.extend(["--workdir".into(), self.workdir.clone()]);
         args.push("--init".into());
 
-        if self.interactive {
+        if self.mode.is_interactive() {
             args.push("--interactive".into());
             args.push("--tty".into());
         }
@@ -62,14 +81,18 @@ impl RunOpts {
 
         args.push(self.image.clone());
 
-        // CLI flags (passed through to entrypoint's "$@")
-        for flag in &self.cli_flags {
-            args.push(flag.clone());
-        }
-
-        // Append task args after image (passed to entrypoint)
-        if let Some(task) = &self.task {
-            args.extend(["-p".into(), task.clone()]);
+        match &self.mode {
+            RunMode::Claude { task, cli_flags } => {
+                for flag in cli_flags {
+                    args.push(flag.clone());
+                }
+                if let Some(t) = task {
+                    args.extend(["-p".into(), t.clone()]);
+                }
+            }
+            RunMode::Shell { cmd: _ } => {
+                unimplemented!("RunMode::Shell args added in Task 3");
+            }
         }
 
         args
@@ -219,9 +242,9 @@ pub fn run(opts: &RunOpts, verbose: bool) -> Result<()> {
 }
 
 /// Build the argument list for `container exec`.
-fn build_exec_args(name: &str, task: Option<&str>, env_vars: &[(String, String)], cli_flags: &[String]) -> Vec<String> {
+fn build_exec_args(name: &str, mode: &RunMode, env_vars: &[(String, String)]) -> Vec<String> {
     let mut args = vec!["exec".to_string()];
-    if task.is_none() {
+    if mode.is_interactive() {
         args.push("--interactive".into());
         args.push("--tty".into());
     }
@@ -255,12 +278,20 @@ fn build_exec_args(name: &str, task: Option<&str>, env_vars: &[(String, String)]
              | sudo tee -a /etc/bash.bashrc > /dev/null; fi; ",
         );
     }
-    cmd.push_str("claude --dangerously-skip-permissions");
-    for flag in cli_flags {
-        cmd.push_str(&format!(" '{}'", flag.replace('\'', "'\\''")));
-    }
-    if let Some(t) = task {
-        cmd.push_str(&format!(" -p '{}'", t.replace('\'', "'\\''")));
+
+    match mode {
+        RunMode::Claude { task, cli_flags } => {
+            cmd.push_str("claude --dangerously-skip-permissions");
+            for flag in cli_flags {
+                cmd.push_str(&format!(" '{}'", flag.replace('\'', "'\\''")));
+            }
+            if let Some(t) = task {
+                cmd.push_str(&format!(" -p '{}'", t.replace('\'', "'\\''")));
+            }
+        }
+        RunMode::Shell { cmd: _ } => {
+            unimplemented!("RunMode::Shell exec args added in Task 4");
+        }
     }
     args.push(cmd);
     args
@@ -269,12 +300,11 @@ fn build_exec_args(name: &str, task: Option<&str>, env_vars: &[(String, String)]
 /// Exec into a running container.
 pub fn exec(
     name: &str,
-    task: Option<&str>,
+    mode: &RunMode,
     env_vars: &[(String, String)],
-    cli_flags: &[String],
     verbose: bool,
 ) -> Result<()> {
-    let args = build_exec_args(name, task, env_vars, cli_flags);
+    let args = build_exec_args(name, mode, env_vars);
 
     if verbose {
         eprintln!("[agentbox] container {}", args.join(" "));
@@ -392,9 +422,7 @@ mod tests {
             memory: "8G".into(),
             env_vars: vec![("GH_TOKEN".into(), "tok123".into())],
             volumes: vec!["/Users/alex/Dev/myapp:/Users/alex/Dev/myapp".into()],
-            interactive: true,
-            task: None,
-            cli_flags: vec![],
+            mode: RunMode::Claude { task: None, cli_flags: vec![] },
         };
         let args = opts.to_run_args();
         assert!(args.contains(&"--name".to_string()));
@@ -476,7 +504,11 @@ mod tests {
             ("GH_TOKEN".to_string(), "tok123".to_string()),
             ("TERM".to_string(), "xterm".to_string()),
         ];
-        let args = build_exec_args("mycontainer", Some("fix tests"), &env_vars, &[]);
+        let mode = RunMode::Claude {
+            task: Some("fix tests".into()),
+            cli_flags: vec![],
+        };
+        let args = build_exec_args("mycontainer", &mode, &env_vars);
         assert!(args.contains(&"--env".to_string()));
         assert!(args.contains(&"GH_TOKEN=tok123".to_string()));
         assert!(args.contains(&"TERM=xterm".to_string()));
@@ -490,7 +522,8 @@ mod tests {
 
     #[test]
     fn test_exec_args_interactive_no_task() {
-        let args = build_exec_args("mycontainer", None, &[], &[]);
+        let mode = RunMode::Claude { task: None, cli_flags: vec![] };
+        let args = build_exec_args("mycontainer", &mode, &[]);
         assert!(args.contains(&"--interactive".to_string()));
         assert!(args.contains(&"--tty".to_string()));
         // No -p flag in command string when no task
@@ -506,7 +539,8 @@ mod tests {
             ("HOSTEXEC_TOKEN".to_string(), "tok".to_string()),
             ("HOSTEXEC_COMMANDS".to_string(), "xcodebuild xcrun".to_string()),
         ];
-        let args = build_exec_args("mycontainer", None, &env_vars, &[]);
+        let mode = RunMode::Claude { task: None, cli_flags: vec![] };
+        let args = build_exec_args("mycontainer", &mode, &env_vars);
         let cmd = args.last().unwrap();
         assert!(cmd.contains("HOSTEXEC_COMMANDS"), "should set up symlinks");
         assert!(cmd.contains("ln -sf /usr/local/bin/hostexec"));
@@ -522,14 +556,16 @@ mod tests {
                 "true".to_string(),
             ),
         ];
-        let args = build_exec_args("mycontainer", None, &env_vars, &[]);
+        let mode = RunMode::Claude { task: None, cli_flags: vec![] };
+        let args = build_exec_args("mycontainer", &mode, &env_vars);
         let cmd = args.last().unwrap();
         assert!(cmd.contains("command_not_found_handle"));
     }
 
     #[test]
     fn test_exec_args_no_hostexec_without_env() {
-        let args = build_exec_args("mycontainer", None, &[], &[]);
+        let mode = RunMode::Claude { task: None, cli_flags: vec![] };
+        let args = build_exec_args("mycontainer", &mode, &[]);
         let cmd = args.last().unwrap();
         assert!(!cmd.contains("HOSTEXEC"), "no bridge setup without env vars");
         assert_eq!(cmd, "claude --dangerously-skip-permissions");
@@ -616,7 +652,11 @@ mod tests {
             "--model".to_string(),
             "sonnet".to_string(),
         ];
-        let args = build_exec_args("mycontainer", None, &[], &cli_flags);
+        let mode = RunMode::Claude {
+            task: None,
+            cli_flags: cli_flags.clone(),
+        };
+        let args = build_exec_args("mycontainer", &mode, &[]);
         let cmd = args.last().unwrap();
         assert!(cmd.contains("claude --dangerously-skip-permissions"));
         assert!(cmd.contains("'--append-system-prompt' 'Be careful.'"));
@@ -626,7 +666,11 @@ mod tests {
     #[test]
     fn test_exec_args_cli_flags_before_task() {
         let cli_flags = vec!["--model".to_string(), "sonnet".to_string()];
-        let args = build_exec_args("mycontainer", Some("fix tests"), &[], &cli_flags);
+        let mode = RunMode::Claude {
+            task: Some("fix tests".into()),
+            cli_flags: cli_flags.clone(),
+        };
+        let args = build_exec_args("mycontainer", &mode, &[]);
         let cmd = args.last().unwrap();
         // Flags should appear between --dangerously-skip-permissions and -p
         let dsp_pos = cmd.find("--dangerously-skip-permissions").unwrap();
@@ -638,7 +682,8 @@ mod tests {
 
     #[test]
     fn test_exec_args_cli_flags_empty() {
-        let args = build_exec_args("mycontainer", None, &[], &[]);
+        let mode = RunMode::Claude { task: None, cli_flags: vec![] };
+        let args = build_exec_args("mycontainer", &mode, &[]);
         let cmd = args.last().unwrap();
         assert_eq!(cmd, "claude --dangerously-skip-permissions");
     }
@@ -649,7 +694,11 @@ mod tests {
             "--append-system-prompt".to_string(),
             "Don't break things".to_string(),
         ];
-        let args = build_exec_args("mycontainer", None, &[], &cli_flags);
+        let mode = RunMode::Claude {
+            task: None,
+            cli_flags: cli_flags.clone(),
+        };
+        let args = build_exec_args("mycontainer", &mode, &[]);
         let cmd = args.last().unwrap();
         // Single quotes in values must be escaped
         assert!(cmd.contains("Don'\\''t break things"));
@@ -665,9 +714,7 @@ mod tests {
             memory: "4G".into(),
             env_vars: vec![],
             volumes: vec![],
-            interactive: false,
-            task: Some("fix tests".into()),
-            cli_flags: vec!["--model".into(), "sonnet".into()],
+            mode: RunMode::Claude { task: Some("fix tests".into()), cli_flags: vec!["--model".into(), "sonnet".into()] },
         };
         let args = opts.to_run_args();
         let image_pos = args.iter().position(|a| a == "agentbox:default").unwrap();
@@ -688,9 +735,7 @@ mod tests {
             memory: "4G".into(),
             env_vars: vec![],
             volumes: vec![],
-            interactive: true,
-            task: None,
-            cli_flags: vec![],
+            mode: RunMode::Claude { task: None, cli_flags: vec![] },
         };
         let args = opts.to_run_args();
         // Last arg should be the image since no task and no cli_flags
@@ -707,9 +752,7 @@ mod tests {
             memory: "4G".into(),
             env_vars: vec![],
             volumes: vec![],
-            interactive: false,
-            task: Some("fix the tests".into()),
-            cli_flags: vec![],
+            mode: RunMode::Claude { task: Some("fix the tests".into()), cli_flags: vec![] },
         };
         let args = opts.to_run_args();
         assert!(!args.contains(&"--interactive".to_string()));
