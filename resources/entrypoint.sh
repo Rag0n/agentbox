@@ -24,4 +24,17 @@ if [ "$HOSTEXEC_FORWARD_NOT_FOUND" = "true" ]; then
     echo 'command_not_found_handle() { /usr/local/bin/hostexec "$@"; }' | sudo tee -a /etc/bash.bashrc > /dev/null
 fi
 
+# Shell mode: open bash instead of claude (used by `agentbox shell`)
+if [ "$1" = "--shell" ]; then
+    shift
+    if [ $# -eq 0 ]; then
+        exec bash -l
+    else
+        # Pass tokens as positional args so bash receives distinct words — not a
+        # re-parsed string. Using "$*" would break args with single quotes or
+        # spaces; exec "$@" preserves boundaries like docker exec does.
+        exec bash -lc 'exec "$@"' bash "$@"
+    fi
+fi
+
 exec claude --dangerously-skip-permissions "$@"
