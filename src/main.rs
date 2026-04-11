@@ -22,15 +22,15 @@ struct Cli {
     task: Vec<String>,
 
     /// Use a named profile from config
-    #[arg(long)]
+    #[arg(long, global = true)]
     profile: Option<String>,
 
     /// Show container commands and build output
-    #[arg(long)]
+    #[arg(long, global = true)]
     verbose: bool,
 
     /// Additional volume mounts (host path, or host:container)
-    #[arg(long)]
+    #[arg(long, global = true)]
     mount: Vec<String>,
 
     #[command(subcommand)]
@@ -63,6 +63,8 @@ enum Commands {
     },
     /// Run the interactive setup wizard
     Setup,
+    /// Open a bash shell in the container (no Claude)
+    Shell,
 }
 
 #[derive(Subcommand)]
@@ -287,6 +289,97 @@ fn split_at_double_dash(args: Vec<String>) -> (Vec<String>, Vec<String>) {
     }
 }
 
+fn run_session(
+    cli: &Cli,
+    config: &config::Config,
+    mode: container::RunMode,
+) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let cwd_str = cwd.to_string_lossy().to_string();
+    let name = container::container_name(&cwd_str);
+
+    let bridge_handle = if !config.bridge.allowed_commands.is_empty() {
+        match bridge::start_bridge(&config.bridge, &cwd_str) {
+            Ok(handle) => {
+                if cli.verbose {
+                    eprintln!(
+                        "[agentbox] bridge started on port {} ({} commands allowed)",
+                        handle.port,
+                        config.bridge.allowed_commands.len()
+                    );
+                }
+                Some(handle)
+            }
+            Err(e) => {
+                eprintln!("[agentbox] warning: bridge failed to start: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    install_signal_handlers();
+
+    let result = match container::status(&name)? {
+        container::ContainerStatus::Running => {
+            let env_vars = build_all_env_vars(config, bridge_handle.as_ref());
+            container::exec(&name, &mode, &env_vars, cli.verbose)
+        }
+        container::ContainerStatus::Stopped => {
+            let (dockerfile_content, image_tag) =
+                image::resolve_dockerfile(&cwd, cli.profile.as_deref(), config)?;
+            let cache_key = image_tag.replace(':', "-");
+            if image::needs_build(&dockerfile_content, &cache_key, &image::cache_dir()) {
+                eprintln!("Image changed, recreating container...");
+                container::rm(&name, cli.verbose)?;
+                image::ensure_base_image(&dockerfile_content, false, cli.verbose)?;
+                image::build(&image_tag, &dockerfile_content, false, false, cli.verbose)?;
+                image::save_cache(&dockerfile_content, &cache_key, &image::cache_dir())?;
+                create_and_run(
+                    &name,
+                    &image_tag,
+                    &cwd_str,
+                    config,
+                    mode.clone(),
+                    cli.verbose,
+                    &cli.mount,
+                    bridge_handle.as_ref(),
+                )
+            } else {
+                container::start(&name, cli.verbose)?;
+                let env_vars = build_all_env_vars(config, bridge_handle.as_ref());
+                container::exec(&name, &mode, &env_vars, cli.verbose)
+            }
+        }
+        container::ContainerStatus::NotFound => {
+            let (dockerfile_content, image_tag) =
+                image::resolve_dockerfile(&cwd, cli.profile.as_deref(), config)?;
+            let cache_key = image_tag.replace(':', "-");
+            if image::needs_build(&dockerfile_content, &cache_key, &image::cache_dir()) {
+                eprintln!("Building image...");
+                image::ensure_base_image(&dockerfile_content, false, cli.verbose)?;
+                image::build(&image_tag, &dockerfile_content, false, false, cli.verbose)?;
+                image::save_cache(&dockerfile_content, &cache_key, &image::cache_dir())?;
+            }
+            create_and_run(
+                &name,
+                &image_tag,
+                &cwd_str,
+                config,
+                mode,
+                cli.verbose,
+                &cli.mount,
+                bridge_handle.as_ref(),
+            )
+        }
+    };
+
+    container::maybe_stop_container(&name, cli.verbose);
+
+    result
+}
+
 fn main() -> Result<()> {
     // Check if we're invoked as hostexec (symlink mode)
     let binary_name = std::env::args()
@@ -372,11 +465,15 @@ fn main() -> Result<()> {
             setup::run_setup()?;
             Ok(())
         }
+        Some(Commands::Shell) => {
+            let config = config::Config::load()?;
+            let mode = container::RunMode::Shell {
+                cmd: passthrough_flags,
+            };
+            run_session(&cli, &config, mode)
+        }
         None => {
             let config = config::Config::load()?;
-            let cwd = std::env::current_dir()?;
-            let cwd_str = cwd.to_string_lossy().to_string();
-            let name = container::container_name(&cwd_str);
             let task_str = if cli.task.is_empty() {
                 None
             } else {
@@ -384,96 +481,14 @@ fn main() -> Result<()> {
             };
 
             let mut cli_flags: Vec<String> = config.cli_flags("claude").to_vec();
-            cli_flags.extend(passthrough_flags.clone());
+            cli_flags.extend(passthrough_flags);
 
             let mode = container::RunMode::Claude {
                 task: task_str,
                 cli_flags,
             };
 
-            // Start bridge if configured
-            let bridge_handle = if !config.bridge.allowed_commands.is_empty() {
-                match bridge::start_bridge(&config.bridge, &cwd_str) {
-                    Ok(handle) => {
-                        if cli.verbose {
-                            eprintln!(
-                                "[agentbox] bridge started on port {} ({} commands allowed)",
-                                handle.port,
-                                config.bridge.allowed_commands.len()
-                            );
-                        }
-                        Some(handle)
-                    }
-                    Err(e) => {
-                        eprintln!("[agentbox] warning: bridge failed to start: {}", e);
-                        None
-                    }
-                }
-            } else {
-                None
-            };
-
-            // Suppress SIGHUP/SIGTERM so we survive long enough for cleanup
-            install_signal_handlers();
-
-            let result = match container::status(&name)? {
-                container::ContainerStatus::Running => {
-                    let env_vars = build_all_env_vars(&config, bridge_handle.as_ref());
-                    container::exec(&name, &mode, &env_vars, cli.verbose)
-                }
-                container::ContainerStatus::Stopped => {
-                    let (dockerfile_content, image_tag) =
-                        image::resolve_dockerfile(&cwd, cli.profile.as_deref(), &config)?;
-                    let cache_key = image_tag.replace(':', "-");
-                    if image::needs_build(&dockerfile_content, &cache_key, &image::cache_dir()) {
-                        eprintln!("Image changed, recreating container...");
-                        container::rm(&name, cli.verbose)?;
-                        image::ensure_base_image(&dockerfile_content, false, cli.verbose)?;
-                        image::build(&image_tag, &dockerfile_content, false, false, cli.verbose)?;
-                        image::save_cache(&dockerfile_content, &cache_key, &image::cache_dir())?;
-                        create_and_run(
-                            &name,
-                            &image_tag,
-                            &cwd_str,
-                            &config,
-                            mode.clone(),
-                            cli.verbose,
-                            &cli.mount,
-                            bridge_handle.as_ref(),
-                        )
-                    } else {
-                        container::start(&name, cli.verbose)?;
-                        let env_vars = build_all_env_vars(&config, bridge_handle.as_ref());
-                        container::exec(&name, &mode, &env_vars, cli.verbose)
-                    }
-                }
-                container::ContainerStatus::NotFound => {
-                    let (dockerfile_content, image_tag) =
-                        image::resolve_dockerfile(&cwd, cli.profile.as_deref(), &config)?;
-                    let cache_key = image_tag.replace(':', "-");
-                    if image::needs_build(&dockerfile_content, &cache_key, &image::cache_dir()) {
-                        eprintln!("Building image...");
-                        image::ensure_base_image(&dockerfile_content, false, cli.verbose)?;
-                        image::build(&image_tag, &dockerfile_content, false, false, cli.verbose)?;
-                        image::save_cache(&dockerfile_content, &cache_key, &image::cache_dir())?;
-                    }
-                    create_and_run(
-                        &name,
-                        &image_tag,
-                        &cwd_str,
-                        &config,
-                        mode,
-                        cli.verbose,
-                        &cli.mount,
-                        bridge_handle.as_ref(),
-                    )
-                }
-            };
-
-            // Auto-stop container if we're the last session
-            container::maybe_stop_container(&name, cli.verbose);
-
-            result
+            run_session(&cli, &config, mode)
         }
     }
 }
@@ -771,5 +786,51 @@ mod tests {
         let (task, flags) = split_at_double_dash(args);
         assert_eq!(task, vec!["fix", "tests"]);
         assert!(flags.is_empty());
+    }
+
+    #[test]
+    fn test_shell_subcommand_no_args() {
+        let cli = Cli::try_parse_from(["agentbox", "shell"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Shell)));
+    }
+
+    #[test]
+    fn test_shell_subcommand_with_passthrough() {
+        let raw_args: Vec<String> = vec![
+            "agentbox".into(),
+            "shell".into(),
+            "--".into(),
+            "ls".into(),
+            "-la".into(),
+        ];
+        let (agentbox_args, passthrough_flags) = split_at_double_dash(raw_args);
+        let cli = Cli::try_parse_from(agentbox_args).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Shell)));
+        assert_eq!(passthrough_flags, vec!["ls", "-la"]);
+    }
+
+    #[test]
+    fn test_shell_subcommand_with_profile_and_passthrough() {
+        let raw_args: Vec<String> = vec![
+            "agentbox".into(),
+            "shell".into(),
+            "--profile".into(),
+            "mystack".into(),
+            "--".into(),
+            "npm".into(),
+            "test".into(),
+        ];
+        let (agentbox_args, passthrough_flags) = split_at_double_dash(raw_args);
+        let cli = Cli::try_parse_from(agentbox_args).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Shell)));
+        assert_eq!(cli.profile, Some("mystack".into()));
+        assert_eq!(passthrough_flags, vec!["npm", "test"]);
+    }
+
+    #[test]
+    fn test_shell_subcommand_with_verbose() {
+        let cli = Cli::try_parse_from(["agentbox", "shell", "--verbose"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Shell)));
+        assert!(cli.verbose);
     }
 }
