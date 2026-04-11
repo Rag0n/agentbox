@@ -301,20 +301,19 @@ fn build_exec_args(name: &str, mode: &RunMode, env_vars: &[(String, String)]) ->
             }
             args.push(cmd);
         }
-        RunMode::Shell { cmd: shell_cmd } if shell_cmd.is_empty() => {
-            let mut cmd = setup;
-            cmd.push_str("exec bash -l");
-            args.push(cmd);
-        }
         RunMode::Shell { cmd: shell_cmd } => {
-            // Use bash positional args. The script execs "$@", and the user
-            // tokens are passed as separate process args after a $0 placeholder.
-            // This preserves arg boundaries without any string-level escaping.
-            let script = format!("{}exec \"$@\"", setup);
-            args.push(script);
-            args.push("bash".into()); // $0 placeholder for the inner bash
-            for token in shell_cmd {
-                args.push(token.clone());
+            let mut cmd = setup;
+            if shell_cmd.is_empty() {
+                cmd.push_str("exec bash -l");
+                args.push(cmd);
+            } else {
+                // Pass user tokens as bash positional args: the script execs
+                // "$@" and tokens follow a $0 placeholder. Preserves arg
+                // boundaries without string-level shell escaping.
+                cmd.push_str("exec \"$@\"");
+                args.push(cmd);
+                args.push("bash".into());
+                args.extend(shell_cmd.iter().cloned());
             }
         }
     }
