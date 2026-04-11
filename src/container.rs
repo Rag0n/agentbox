@@ -244,6 +244,33 @@ pub fn run(opts: &RunOpts, verbose: bool) -> Result<()> {
     Ok(())
 }
 
+/// Returns the HOSTEXEC bash setup prefix that runs before the main command.
+/// Mirrors the logic that the entrypoint runs at cold-start, applied here for
+/// the exec path which bypasses the entrypoint.
+fn build_setup_prefix(env_vars: &[(String, String)]) -> String {
+    let mut prefix = String::new();
+    if env_vars.iter().any(|(k, _)| k == "HOSTEXEC_COMMANDS") {
+        prefix.push_str(
+            "if [ -n \"$HOSTEXEC_COMMANDS\" ]; then \
+             mkdir -p ~/.local/bin; \
+             for c in $HOSTEXEC_COMMANDS; do \
+             ln -sf /usr/local/bin/hostexec ~/.local/bin/$c; \
+             done; fi; ",
+        );
+    }
+    if env_vars
+        .iter()
+        .any(|(k, v)| k == "HOSTEXEC_FORWARD_NOT_FOUND" && v == "true")
+    {
+        prefix.push_str(
+            "if ! grep -q command_not_found_handle /etc/bash.bashrc 2>/dev/null; then \
+             echo 'command_not_found_handle() { /usr/local/bin/hostexec \"$@\"; }' \
+             | sudo tee -a /etc/bash.bashrc > /dev/null; fi; ",
+        );
+    }
+    prefix
+}
+
 /// Build the argument list for `container exec`.
 fn build_exec_args(name: &str, mode: &RunMode, env_vars: &[(String, String)]) -> Vec<String> {
     let mut args = vec!["exec".to_string()];
@@ -260,30 +287,11 @@ fn build_exec_args(name: &str, mode: &RunMode, env_vars: &[(String, String)]) ->
     args.push("bash".into());
     args.extend(["-lc".into()]);
 
-    let mut cmd = String::new();
-    // Set up hostexec symlinks if bridge env vars are present (exec bypasses entrypoint)
-    if env_vars.iter().any(|(k, _)| k == "HOSTEXEC_COMMANDS") {
-        cmd.push_str(
-            "if [ -n \"$HOSTEXEC_COMMANDS\" ]; then \
-             mkdir -p ~/.local/bin; \
-             for c in $HOSTEXEC_COMMANDS; do \
-             ln -sf /usr/local/bin/hostexec ~/.local/bin/$c; \
-             done; fi; ",
-        );
-    }
-    if env_vars
-        .iter()
-        .any(|(k, v)| k == "HOSTEXEC_FORWARD_NOT_FOUND" && v == "true")
-    {
-        cmd.push_str(
-            "if ! grep -q command_not_found_handle /etc/bash.bashrc 2>/dev/null; then \
-             echo 'command_not_found_handle() { /usr/local/bin/hostexec \"$@\"; }' \
-             | sudo tee -a /etc/bash.bashrc > /dev/null; fi; ",
-        );
-    }
+    let setup = build_setup_prefix(env_vars);
 
     match mode {
         RunMode::Claude { task, cli_flags } => {
+            let mut cmd = setup;
             cmd.push_str("claude --dangerously-skip-permissions");
             for flag in cli_flags {
                 cmd.push_str(&format!(" '{}'", flag.replace('\'', "'\\''")));
@@ -291,12 +299,25 @@ fn build_exec_args(name: &str, mode: &RunMode, env_vars: &[(String, String)]) ->
             if let Some(t) = task {
                 cmd.push_str(&format!(" -p '{}'", t.replace('\'', "'\\''")));
             }
+            args.push(cmd);
         }
-        RunMode::Shell { cmd: _ } => {
-            unimplemented!("RunMode::Shell exec args added in Task 4");
+        RunMode::Shell { cmd: shell_cmd } if shell_cmd.is_empty() => {
+            let mut cmd = setup;
+            cmd.push_str("exec bash -l");
+            args.push(cmd);
+        }
+        RunMode::Shell { cmd: shell_cmd } => {
+            // Use bash positional args. The script execs "$@", and the user
+            // tokens are passed as separate process args after a $0 placeholder.
+            // This preserves arg boundaries without any string-level escaping.
+            let script = format!("{}exec \"$@\"", setup);
+            args.push(script);
+            args.push("bash".into()); // $0 placeholder for the inner bash
+            for token in shell_cmd {
+                args.push(token.clone());
+            }
         }
     }
-    args.push(cmd);
     args
 }
 
@@ -821,5 +842,108 @@ mod tests {
         assert!(!RunMode::Claude { task: Some("t".into()), cli_flags: vec![] }.is_interactive());
         assert!(RunMode::Shell { cmd: vec![] }.is_interactive());
         assert!(!RunMode::Shell { cmd: vec!["ls".into()] }.is_interactive());
+    }
+
+    #[test]
+    fn test_exec_args_shell_interactive_no_cmd() {
+        let mode = RunMode::Shell { cmd: vec![] };
+        let args = build_exec_args("mycontainer", &mode, &[]);
+        assert!(args.contains(&"--interactive".to_string()));
+        assert!(args.contains(&"--tty".to_string()));
+        let lc_pos = args.iter().position(|a| a == "-lc").unwrap();
+        let script = &args[lc_pos + 1];
+        assert!(script.ends_with("exec bash -l"), "got: {}", script);
+        assert!(!script.contains("claude"));
+    }
+
+    #[test]
+    fn test_exec_args_shell_with_cmd() {
+        let mode = RunMode::Shell {
+            cmd: vec!["ls".into(), "-la".into(), "/workspace".into()],
+        };
+        let args = build_exec_args("mycontainer", &mode, &[]);
+        assert!(!args.contains(&"--tty".to_string()));
+        let lc_pos = args.iter().position(|a| a == "-lc").unwrap();
+        let script = &args[lc_pos + 1];
+        assert!(script.ends_with("exec \"$@\""), "got: {}", script);
+        assert!(!script.contains("claude"));
+        assert_eq!(&args[lc_pos + 2], "bash");
+        assert_eq!(&args[lc_pos + 3], "ls");
+        assert_eq!(&args[lc_pos + 4], "-la");
+        assert_eq!(&args[lc_pos + 5], "/workspace");
+    }
+
+    #[test]
+    fn test_exec_args_shell_cmd_preserves_quotes_via_positional_args() {
+        let mode = RunMode::Shell {
+            cmd: vec!["echo".into(), "Don't".into()],
+        };
+        let args = build_exec_args("mycontainer", &mode, &[]);
+        let lc_pos = args.iter().position(|a| a == "-lc").unwrap();
+        assert_eq!(&args[lc_pos + 3], "echo");
+        assert_eq!(&args[lc_pos + 4], "Don't");
+    }
+
+    #[test]
+    fn test_exec_args_shell_with_hostexec_env() {
+        let env_vars = vec![
+            ("HOSTEXEC_HOST".to_string(), "192.168.64.1".to_string()),
+            ("HOSTEXEC_PORT".to_string(), "12345".to_string()),
+            ("HOSTEXEC_TOKEN".to_string(), "tok".to_string()),
+            ("HOSTEXEC_COMMANDS".to_string(), "xcodebuild xcrun".to_string()),
+        ];
+        let mode = RunMode::Shell { cmd: vec![] };
+        let args = build_exec_args("mycontainer", &mode, &env_vars);
+        let lc_pos = args.iter().position(|a| a == "-lc").unwrap();
+        let script = &args[lc_pos + 1];
+        assert!(script.contains("HOSTEXEC_COMMANDS"));
+        assert!(script.contains("ln -sf /usr/local/bin/hostexec"));
+        assert!(script.contains("exec bash -l"));
+        let setup_pos = script.find("ln -sf").unwrap();
+        let bash_pos = script.find("exec bash").unwrap();
+        assert!(setup_pos < bash_pos);
+    }
+
+    #[test]
+    fn test_exec_args_shell_with_forward_not_found() {
+        let env_vars = vec![
+            ("HOSTEXEC_COMMANDS".to_string(), "xcodebuild".to_string()),
+            ("HOSTEXEC_FORWARD_NOT_FOUND".to_string(), "true".to_string()),
+        ];
+        let mode = RunMode::Shell { cmd: vec![] };
+        let args = build_exec_args("mycontainer", &mode, &env_vars);
+        let lc_pos = args.iter().position(|a| a == "-lc").unwrap();
+        let script = &args[lc_pos + 1];
+        assert!(script.contains("command_not_found_handle"));
+        assert!(script.contains("exec bash -l"));
+    }
+
+    #[test]
+    fn test_exec_args_shell_forward_not_found_standalone() {
+        let env_vars = vec![
+            ("HOSTEXEC_FORWARD_NOT_FOUND".to_string(), "true".to_string()),
+        ];
+        let mode = RunMode::Shell { cmd: vec![] };
+        let args = build_exec_args("mycontainer", &mode, &env_vars);
+        let lc_pos = args.iter().position(|a| a == "-lc").unwrap();
+        let script = &args[lc_pos + 1];
+        assert!(script.contains("command_not_found_handle"));
+        assert!(!script.contains("ln -sf /usr/local/bin/hostexec"));
+        assert!(script.contains("exec bash -l"));
+    }
+
+    #[test]
+    fn test_exec_args_shell_with_cmd_includes_setup_prefix() {
+        let env_vars = vec![
+            ("HOSTEXEC_COMMANDS".to_string(), "xcodebuild".to_string()),
+        ];
+        let mode = RunMode::Shell {
+            cmd: vec!["xcodebuild".into(), "-version".into()],
+        };
+        let args = build_exec_args("mycontainer", &mode, &env_vars);
+        let lc_pos = args.iter().position(|a| a == "-lc").unwrap();
+        let script = &args[lc_pos + 1];
+        assert!(script.contains("ln -sf /usr/local/bin/hostexec"));
+        assert!(script.ends_with("exec \"$@\""));
     }
 }
