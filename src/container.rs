@@ -90,8 +90,11 @@ impl RunOpts {
                     args.extend(["-p".into(), t.clone()]);
                 }
             }
-            RunMode::Shell { cmd: _ } => {
-                unimplemented!("RunMode::Shell args added in Task 3");
+            RunMode::Shell { cmd } => {
+                args.push("--shell".into());
+                for token in cmd {
+                    args.push(token.clone());
+                }
             }
         }
 
@@ -759,5 +762,64 @@ mod tests {
         assert!(!args.contains(&"--tty".to_string()));
         assert!(args.contains(&"-p".to_string()));
         assert!(args.contains(&"fix the tests".to_string()));
+    }
+
+    #[test]
+    fn test_run_args_shell_interactive_no_cmd() {
+        let opts = RunOpts {
+            name: "agentbox-myapp-abc123".into(),
+            image: "agentbox:default".into(),
+            workdir: "/Users/alex/Dev/myapp".into(),
+            cpus: 2,
+            memory: "4G".into(),
+            env_vars: vec![],
+            volumes: vec![],
+            mode: RunMode::Shell { cmd: vec![] },
+        };
+        let args = opts.to_run_args();
+        let image_pos = args.iter().position(|a| a == "agentbox:default").unwrap();
+        let after_image: Vec<&String> = args.iter().skip(image_pos + 1).collect();
+        assert_eq!(after_image, vec![&"--shell".to_string()]);
+        // Interactive: TTY flags present
+        assert!(args.contains(&"--interactive".to_string()));
+        assert!(args.contains(&"--tty".to_string()));
+    }
+
+    #[test]
+    fn test_run_args_shell_with_cmd() {
+        let opts = RunOpts {
+            name: "agentbox-myapp-abc123".into(),
+            image: "agentbox:default".into(),
+            workdir: "/Users/alex/Dev/myapp".into(),
+            cpus: 2,
+            memory: "4G".into(),
+            env_vars: vec![],
+            volumes: vec![],
+            mode: RunMode::Shell {
+                cmd: vec!["ls".into(), "-la".into(), "/workspace".into()],
+            },
+        };
+        let args = opts.to_run_args();
+        let image_pos = args.iter().position(|a| a == "agentbox:default").unwrap();
+        let after_image: Vec<&String> = args.iter().skip(image_pos + 1).collect();
+        assert_eq!(
+            after_image,
+            vec![
+                &"--shell".to_string(),
+                &"ls".to_string(),
+                &"-la".to_string(),
+                &"/workspace".to_string(),
+            ]
+        );
+        // Headless: no TTY flags
+        assert!(!args.contains(&"--tty".to_string()));
+    }
+
+    #[test]
+    fn test_run_mode_is_interactive() {
+        assert!(RunMode::Claude { task: None, cli_flags: vec![] }.is_interactive());
+        assert!(!RunMode::Claude { task: Some("t".into()), cli_flags: vec![] }.is_interactive());
+        assert!(RunMode::Shell { cmd: vec![] }.is_interactive());
+        assert!(!RunMode::Shell { cmd: vec!["ls".into()] }.is_interactive());
     }
 }
