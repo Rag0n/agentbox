@@ -224,8 +224,8 @@ fn parse_container_list(json_str: &str) -> Vec<(String, String)> {
     result
 }
 
-/// Run a container with the given options.
-pub fn run(opts: &RunOpts, verbose: bool) -> Result<()> {
+/// Run a container with the given options. Returns the process exit code.
+pub fn run(opts: &RunOpts, verbose: bool) -> Result<i32> {
     let args = opts.to_run_args();
     if verbose {
         eprintln!("[agentbox] container {}", args.join(" "));
@@ -238,10 +238,7 @@ pub fn run(opts: &RunOpts, verbose: bool) -> Result<()> {
         .status()
         .context("failed to run 'container run'")?;
 
-    if !status.success() {
-        bail!("container exited with status {}", status);
-    }
-    Ok(())
+    Ok(status.code().unwrap_or(1))
 }
 
 /// Returns the HOSTEXEC bash setup prefix that runs before the main command.
@@ -320,13 +317,13 @@ fn build_exec_args(name: &str, mode: &RunMode, env_vars: &[(String, String)]) ->
     args
 }
 
-/// Exec into a running container.
+/// Exec into a running container. Returns the process exit code.
 pub fn exec(
     name: &str,
     mode: &RunMode,
     env_vars: &[(String, String)],
     verbose: bool,
-) -> Result<()> {
+) -> Result<i32> {
     let args = build_exec_args(name, mode, env_vars);
 
     if verbose {
@@ -340,10 +337,7 @@ pub fn exec(
         .status()
         .context("failed to run 'container exec'")?;
 
-    if !status.success() {
-        bail!("container exec exited with status {}", status);
-    }
-    Ok(())
+    Ok(status.code().unwrap_or(1))
 }
 
 /// Start a stopped container.

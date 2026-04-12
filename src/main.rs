@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 
 mod bridge;
@@ -124,7 +124,7 @@ fn create_and_run(
     verbose: bool,
     extra_volumes: &[String],
     bridge_handle: Option<&bridge::BridgeHandle>,
-) -> Result<()> {
+) -> Result<i32> {
     let home = dirs::home_dir().context("cannot determine home directory")?;
 
     let env_vars = build_all_env_vars(config, bridge_handle);
@@ -293,7 +293,7 @@ fn run_session(
     cli: &Cli,
     config: &config::Config,
     mode: container::RunMode,
-) -> Result<()> {
+) -> Result<i32> {
     let cwd = std::env::current_dir()?;
     let cwd_str = cwd.to_string_lossy().to_string();
     let name = container::container_name(&cwd_str);
@@ -470,7 +470,11 @@ fn main() -> Result<()> {
             let mode = container::RunMode::Shell {
                 cmd: passthrough_flags,
             };
-            run_session(&cli, &config, mode)
+            let code = run_session(&cli, &config, mode)?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
         }
         None => {
             let config = config::Config::load()?;
@@ -488,7 +492,11 @@ fn main() -> Result<()> {
                 cli_flags,
             };
 
-            run_session(&cli, &config, mode)
+            let code = run_session(&cli, &config, mode)?;
+            if code != 0 {
+                bail!("container exited with status {}", code);
+            }
+            Ok(())
         }
     }
 }
