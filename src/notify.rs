@@ -44,6 +44,20 @@ pub fn detect_terminal<F: Fn(&str) -> Option<String>>(env: F) -> Option<OscKind>
     None
 }
 
+/// Strip bytes that could break the OSC envelope or render badly.
+///
+/// Strips: `\x1b` (ESC — starts a new escape sequence), `\x07` (BEL — ends
+/// OSC), `;` (OSC 777 field separator — a legal directory name containing
+/// `;` would otherwise inject extra fields), `\n`, `\r`.
+///
+/// Applied uniformly across OSC kinds; `;` isn't strictly required for
+/// OSC 9/99 but stripping universally keeps the helper simple.
+pub fn sanitize(s: &str) -> String {
+    s.chars()
+        .filter(|c| !matches!(*c, '\x1b' | '\x07' | ';' | '\n' | '\r'))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,5 +131,38 @@ mod tests {
             ("ITERM_SESSION_ID", "should-be-ignored"),
         ]);
         assert_eq!(detect_terminal(env), Some(OscKind::Osc777));
+    }
+
+    #[test]
+    fn test_sanitize_strips_esc() {
+        assert_eq!(sanitize("foo\x1bbar"), "foobar");
+    }
+
+    #[test]
+    fn test_sanitize_strips_bel() {
+        assert_eq!(sanitize("foo\x07bar"), "foobar");
+    }
+
+    #[test]
+    fn test_sanitize_strips_semicolon() {
+        // Prevents OSC 777 field injection.
+        assert_eq!(sanitize("my;project"), "myproject");
+    }
+
+    #[test]
+    fn test_sanitize_strips_newline_and_cr() {
+        assert_eq!(sanitize("foo\nbar"), "foobar");
+        assert_eq!(sanitize("foo\rbar"), "foobar");
+        assert_eq!(sanitize("foo\r\nbar"), "foobar");
+    }
+
+    #[test]
+    fn test_sanitize_preserves_spaces() {
+        assert_eq!(sanitize("my project"), "my project");
+    }
+
+    #[test]
+    fn test_sanitize_preserves_utf8() {
+        assert_eq!(sanitize("café 🚀"), "café 🚀");
     }
 }
