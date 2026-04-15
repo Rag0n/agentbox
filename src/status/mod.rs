@@ -424,14 +424,20 @@ fn totals_cells(rows: &[Row]) -> [String; 7] {
 }
 
 /// Render the full table as a single newline-terminated string.
+///
 /// `current_name` (when Some + `use_color`) bolds the matching row.
 /// `now_unix` is supplied so the function stays pure (testable).
+/// `widths` (when Some) supplies per-column floor widths — actual cell
+/// content is still allowed to exceed them (monotonic growth). Pass
+/// `None` for one-shot behavior where widths are derived purely from
+/// the rows being rendered.
 pub fn format_table(
     rows: &[Row],
     current_name: Option<&str>,
     use_color: bool,
     home: &Path,
     now_unix: i64,
+    widths: Option<&ColumnWidths>,
 ) -> String {
     let mut all_rows: Vec<[String; 7]> = Vec::new();
     all_rows.push(HEADERS.map(String::from));
@@ -440,19 +446,25 @@ pub fn format_table(
     }
     all_rows.push(totals_cells(rows));
 
-    let mut widths = [0usize; 7];
+    let mut col_widths = [0usize; 7];
+    if let Some(w) = widths {
+        col_widths[0] = w.name;
+        col_widths[1] = w.status;
+        col_widths[2] = w.project;
+        col_widths[3] = w.cpu;
+        col_widths[4] = w.mem;
+        col_widths[5] = w.uptime;
+        col_widths[6] = w.sessions;
+    }
     for r in &all_rows {
         for (i, cell) in r.iter().enumerate() {
             let w = cell.chars().count();
-            if w > widths[i] {
-                widths[i] = w;
+            if w > col_widths[i] {
+                col_widths[i] = w;
             }
         }
     }
 
-    // Bolding only applies to data rows — not the header (idx 0) or totals
-    // (idx data_count + 1) — and only when the data row's name matches
-    // `current_name`. The entire line gets wrapped in ANSI bold.
     let data_count = rows.len();
     let mut out = String::new();
     for (idx, r) in all_rows.iter().enumerate() {
@@ -461,7 +473,7 @@ pub fn format_table(
             if i == r.len() - 1 {
                 line.push_str(cell);
             } else {
-                line.push_str(&pad_right(cell, widths[i]));
+                line.push_str(&pad_right(cell, col_widths[i]));
                 line.push_str("  ");
             }
         }
@@ -614,7 +626,7 @@ pub fn run(verbose: bool) -> Result<()> {
     let use_color = is_tty && std::env::var_os("NO_COLOR").is_none();
 
     let now = now_unix();
-    let table = format_table(&rows, current_ref, use_color, &home, now);
+    let table = format_table(&rows, current_ref, use_color, &home, now, None);
     {
         let mut handle = stdout.lock();
         handle.write_all(table.as_bytes())?;
@@ -634,7 +646,7 @@ pub fn run(verbose: bool) -> Result<()> {
         return Ok(());
     }
     let now2 = now_unix();
-    let table2 = format_table(&rows, current_ref, use_color, &home, now2);
+    let table2 = format_table(&rows, current_ref, use_color, &home, now2, None);
 
     // Move cursor up over the previously printed table and clear to end.
     // Line count = header + data rows + totals = rows.len() + 2
@@ -714,6 +726,38 @@ mod tests {
         let w = ColumnWidths::seeded();
         assert_eq!(w.cpu, 6);
         assert_eq!(w.mem, 10);
+    }
+
+    #[test]
+    fn test_format_table_no_widths_matches_old_behavior() {
+        let home = std::path::PathBuf::from("/home/u");
+        let rows = vec![mk_row("agentbox-a-1", "/home/u/p")];
+        let old = format_table(&rows, None, false, &home, 0, None);
+        // Sanity: old includes NAME header and the one row
+        assert!(old.contains("NAME"));
+        assert!(old.contains("agentbox-a-1"));
+    }
+
+    #[test]
+    fn test_format_table_widths_act_as_floor() {
+        let home = std::path::PathBuf::from("/home/u");
+        let rows = vec![mk_row("agentbox-a-1", "/home/u/p")];
+        let w = ColumnWidths::seeded();
+        let out = format_table(&rows, None, false, &home, 0, Some(&w));
+        // CPU column is seeded to 6 chars ("999.9%") but rendered value is
+        // "--" (2 chars). With floor, the header row "CPU   " is padded
+        // to 6+.
+        assert!(out.contains("CPU   "));
+    }
+
+    #[test]
+    fn test_format_table_widths_allow_growth_beyond_floor() {
+        let home = std::path::PathBuf::from("/home/u");
+        // Name way longer than any seed
+        let rows = vec![mk_row("agentbox-very-very-very-long-name-abc", "/home/u/p")];
+        let w = ColumnWidths::seeded();
+        let out = format_table(&rows, None, false, &home, 0, Some(&w));
+        assert!(out.contains("agentbox-very-very-very-long-name-abc"));
     }
 
     #[test]
@@ -1027,7 +1071,7 @@ buildkit                     0.01%  1.50 GiB / 2.00 GiB    2.11 GiB / 7.49 MiB  
         let rows = sample_rows();
         let home = Path::new("/Users/alex");
         let now = 1_775_515_789 + 60 * 60 * 2 + 60 * 15; // 2h 15m after start
-        let table = format_table(&rows, None, false, home, now);
+        let table = format_table(&rows, None, false, home, now, None);
         assert!(table.contains("NAME"));
         assert!(table.contains("STATUS"));
         assert!(table.contains("PROJECT"));
@@ -1044,7 +1088,7 @@ buildkit                     0.01%  1.50 GiB / 2.00 GiB    2.11 GiB / 7.49 MiB  
     fn test_format_table_running_shows_live_data() {
         let rows = sample_rows();
         let home = Path::new("/Users/alex");
-        let table = format_table(&rows, None, false, home, 1_775_515_789 + 60 * 75);
+        let table = format_table(&rows, None, false, home, 1_775_515_789 + 60 * 75, None);
         assert!(table.contains("7.2%"));
         assert!(table.contains("2h 15m") || table.contains("1h 15m"));
     }
@@ -1053,7 +1097,7 @@ buildkit                     0.01%  1.50 GiB / 2.00 GiB    2.11 GiB / 7.49 MiB  
     fn test_format_table_stopped_shows_dashes() {
         let rows = sample_rows();
         let home = Path::new("/Users/alex");
-        let table = format_table(&rows, None, false, home, 0);
+        let table = format_table(&rows, None, false, home, 0, None);
         // Find the bbb row line
         let bbb_line = table.lines().find(|l| l.contains("agentbox-bbb-222222")).unwrap();
         // CPU and MEM and UPTIME cells should be "--"
@@ -1068,7 +1112,7 @@ buildkit                     0.01%  1.50 GiB / 2.00 GiB    2.11 GiB / 7.49 MiB  
         rows[0].mem_used = None;
         rows[0].mem_total = None;
         let home = Path::new("/Users/alex");
-        let table = format_table(&rows, None, false, home, 1_775_515_789 + 60 * 75);
+        let table = format_table(&rows, None, false, home, 1_775_515_789 + 60 * 75, None);
         let aaa_line = table.lines().find(|l| l.contains("agentbox-aaa-111111")).unwrap();
         // No CPU% number visible for the running row in the fast pass
         assert!(!aaa_line.contains("7.2%"));
@@ -1085,6 +1129,7 @@ buildkit                     0.01%  1.50 GiB / 2.00 GiB    2.11 GiB / 7.49 MiB  
             true,
             home,
             1_775_515_789 + 60 * 75,
+            None,
         );
         let aaa_line = table.lines().find(|l| l.contains("agentbox-aaa-111111")).unwrap();
         assert!(aaa_line.contains("\x1b[1m"));
@@ -1101,6 +1146,7 @@ buildkit                     0.01%  1.50 GiB / 2.00 GiB    2.11 GiB / 7.49 MiB  
             false,
             home,
             1_775_515_789 + 60 * 75,
+            None,
         );
         assert!(!table.contains("\x1b[1m"));
         assert!(!table.contains("\x1b[22m"));
@@ -1110,7 +1156,7 @@ buildkit                     0.01%  1.50 GiB / 2.00 GiB    2.11 GiB / 7.49 MiB  
     fn test_format_table_no_bolding_when_no_current() {
         let rows = sample_rows();
         let home = Path::new("/Users/alex");
-        let table = format_table(&rows, None, true, home, 1_775_515_789 + 60 * 75);
+        let table = format_table(&rows, None, true, home, 1_775_515_789 + 60 * 75, None);
         assert!(!table.contains("\x1b[1m"));
     }
 
@@ -1118,7 +1164,7 @@ buildkit                     0.01%  1.50 GiB / 2.00 GiB    2.11 GiB / 7.49 MiB  
     fn test_format_table_totals_running_count() {
         let rows = sample_rows();
         let home = Path::new("/Users/alex");
-        let table = format_table(&rows, None, false, home, 1_775_515_789 + 60 * 75);
+        let table = format_table(&rows, None, false, home, 1_775_515_789 + 60 * 75, None);
         let totals_line = table.lines().find(|l| l.contains("TOTALS")).unwrap();
         // 1 running container in sample
         assert!(totals_line.contains("1 run"));
@@ -1127,7 +1173,7 @@ buildkit                     0.01%  1.50 GiB / 2.00 GiB    2.11 GiB / 7.49 MiB  
     #[test]
     fn test_format_table_empty_still_renders_header_and_totals() {
         let home = Path::new("/Users/alex");
-        let table = format_table(&[], None, false, home, 0);
+        let table = format_table(&[], None, false, home, 0, None);
         assert!(table.contains("NAME"));
         assert!(table.contains("TOTALS"));
     }
