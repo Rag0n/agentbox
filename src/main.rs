@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 
+mod agent;
 mod bridge;
 mod config;
 mod container;
