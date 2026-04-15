@@ -3,6 +3,7 @@
 //! See `wiki/2026-04-15-build-notifications-design.md` for rationale.
 
 use std::collections::HashMap;
+use std::io::{self, Write};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OscKind {
@@ -56,6 +57,24 @@ pub fn sanitize(s: &str) -> String {
     s.chars()
         .filter(|c| !matches!(*c, '\x1b' | '\x07' | ';' | '\n' | '\r'))
         .collect()
+}
+
+/// Write an OSC notification sequence to `writer`.
+///
+/// Callers are responsible for sanitizing user-controlled input (typically
+/// the body) via `sanitize` before calling this.
+pub fn write_osc<W: Write>(
+    writer: &mut W,
+    kind: OscKind,
+    title: &str,
+    body: &str,
+) -> io::Result<()> {
+    match kind {
+        OscKind::Osc777 => write!(writer, "\x1b]777;notify;{};{}\x07", title, body)?,
+        OscKind::Osc9 => write!(writer, "\x1b]9;{} — {}\x07", title, body)?,
+        OscKind::Osc99 => write!(writer, "\x1b]99;;{} — {}\x07", title, body)?,
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -164,5 +183,27 @@ mod tests {
     #[test]
     fn test_sanitize_preserves_utf8() {
         assert_eq!(sanitize("café 🚀"), "café 🚀");
+    }
+
+    #[test]
+    fn test_write_osc_777_format() {
+        let mut buf = Vec::<u8>::new();
+        write_osc(&mut buf, OscKind::Osc777, "title", "body").unwrap();
+        assert_eq!(buf, b"\x1b]777;notify;title;body\x07");
+    }
+
+    #[test]
+    fn test_write_osc_9_format() {
+        let mut buf = Vec::<u8>::new();
+        write_osc(&mut buf, OscKind::Osc9, "title", "body").unwrap();
+        assert_eq!(buf, "\x1b]9;title — body\x07".as_bytes());
+    }
+
+    #[test]
+    fn test_write_osc_99_simple_form() {
+        let mut buf = Vec::<u8>::new();
+        write_osc(&mut buf, OscKind::Osc99, "title", "body").unwrap();
+        // Simple form, no metadata. See Kitty form choice in design doc.
+        assert_eq!(buf, "\x1b]99;;title — body\x07".as_bytes());
     }
 }
