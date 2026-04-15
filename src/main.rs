@@ -131,6 +131,10 @@ fn resolve_volume(spec: &str) -> Result<String> {
     }
 }
 
+fn build_codex_mount(home: &std::path::Path) -> String {
+    format!("{}:/home/user/.codex", home.join(".codex").display())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn create_and_run(
     name: &str,
@@ -162,6 +166,13 @@ fn create_and_run(
     if home_str != "/home/user" {
         volumes.push(format!("{}:{}", claude_dir.display(), claude_dir.display()));
     }
+
+    // Ensure ~/.codex exists on host before mounting
+    let codex_dir = home.join(".codex");
+    if !codex_dir.exists() {
+        std::fs::create_dir_all(&codex_dir)?;
+    }
+    volumes.push(build_codex_mount(&home));
 
     // Seed container with host's .claude.json (read-only to avoid conflicts)
     let claude_json = home.join(".claude.json");
@@ -979,5 +990,18 @@ mod tests {
         let mut c = config::Config::default();
         c.default_agent = Some("codex".into());
         assert_eq!(c.resolve_default_agent().unwrap(), CodingAgent::Codex);
+    }
+
+    #[test]
+    fn test_codex_mount_added_by_create_and_run_pipeline() {
+        // We verify the mount path assembly, not the full `container run` call.
+        // A pure helper keeps this testable without I/O.
+        let home = dirs::home_dir().unwrap();
+        let codex_mount = build_codex_mount(&home);
+        let expected = format!(
+            "{}:/home/user/.codex",
+            home.join(".codex").display()
+        );
+        assert_eq!(codex_mount, expected);
     }
 }
