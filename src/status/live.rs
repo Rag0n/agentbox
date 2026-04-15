@@ -5,10 +5,13 @@
 //! shutdown watch channel.
 
 use anyhow::{bail, Context, Result};
+use std::io::{self, IsTerminal, Write};
 use std::process::Stdio;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::sync::watch;
+
+use crossterm::{cursor, terminal, ExecutableCommand};
 
 /// Spawn a subprocess, drain stdout+stderr concurrently, and race the
 /// drain against a shutdown signal.
@@ -78,6 +81,64 @@ pub async fn fetch_once(
     }
 }
 
+/// RAII guard for TUI terminal state. On construction (when stdout is a
+/// TTY) it enters the alternate screen, hides the cursor, and enables
+/// raw mode. On drop (including panic unwind) it reverses all three.
+///
+/// The guard is also paired with a process-global panic hook that runs
+/// the same restoration inline, so a panic reaches a sane terminal
+/// before the default panic handler prints.
+pub struct TerminalGuard {
+    active: bool,
+}
+
+impl TerminalGuard {
+    /// Construct a guard. If stdout is not a TTY, returns an inactive
+    /// guard that does nothing on drop (live mode should not be invoked
+    /// off-TTY, but this avoids surprising callers).
+    pub fn new_if_tty() -> Self {
+        if !io::stdout().is_terminal() {
+            return Self { active: false };
+        }
+        install_panic_hook_once();
+        let mut stdout = io::stdout();
+        let _ = stdout.execute(terminal::EnterAlternateScreen);
+        let _ = stdout.execute(cursor::Hide);
+        let _ = terminal::enable_raw_mode();
+        let _ = stdout.flush();
+        Self { active: true }
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        restore_terminal();
+    }
+}
+
+fn restore_terminal() {
+    let mut stdout = io::stdout();
+    let _ = terminal::disable_raw_mode();
+    let _ = stdout.execute(cursor::Show);
+    let _ = stdout.execute(terminal::LeaveAlternateScreen);
+    let _ = stdout.flush();
+}
+
+fn install_panic_hook_once() {
+    use std::sync::OnceLock;
+    static INSTALLED: OnceLock<()> = OnceLock::new();
+    INSTALLED.get_or_init(|| {
+        let default = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            restore_terminal();
+            default(info);
+        }));
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,5 +192,14 @@ mod tests {
         assert!(res.unwrap_err().to_string().contains("shutdown"));
         // Must bail before spawning — well under any subprocess start time.
         assert!(start.elapsed() < std::time::Duration::from_millis(500));
+    }
+
+    #[test]
+    fn test_terminal_guard_construction_is_safe_without_tty() {
+        // In CI / test environments stdout is usually not a TTY. The guard
+        // should gracefully skip the real terminal-mode switches in that
+        // case instead of panicking. This just verifies no panic / no
+        // process death.
+        let _ = TerminalGuard::new_if_tty();
     }
 }
