@@ -66,11 +66,15 @@ already covered by the separate `agent-notifications` plugin.
 Public API:
 
 ```rust
-/// Run the standard build sequence (ensure_base_image + build + save_cache).
-/// Fires a failure notification if the sequence errors. Does not print any
-/// user-facing message — the caller owns pre-build messaging (different sites
-/// need different wording). Does not check `needs_build` — the caller has
-/// already decided a build is required.
+/// Run the standard build sequence (ensure_base_image + build, then
+/// save_cache). Fires a failure notification if the *build* errors
+/// (ensure_base_image or build itself); a post-build `save_cache` error
+/// propagates but does NOT fire a failure notification, because the image
+/// actually built correctly — see the behavior contract below for the
+/// full rationale. Does not print any user-facing message — the caller
+/// owns pre-build messaging (different sites need different wording).
+/// Does not check `needs_build` — the caller has already decided a build
+/// is required.
 pub fn run_build(
     config: &Config,
     dockerfile: &str,
@@ -361,17 +365,23 @@ pub fn run_build(
     pull: bool,
     verbose: bool,
 ) -> Result<()> {
-    let result: Result<()> = (|| {
+    let build_result: Result<()> = (|| {
         image::ensure_base_image(dockerfile, no_cache, verbose)?;
         image::build(image_tag, dockerfile, no_cache, pull, verbose)?;
-        image::save_cache(dockerfile, cache_key, &image::cache_dir())?;
         Ok(())
     })();
 
-    if result.is_err() {
-        send_failure(config);
+    match build_result {
+        Err(e) => {
+            send_failure(config);
+            Err(e)
+        }
+        Ok(()) => {
+            // Build succeeded; save_cache is filesystem bookkeeping whose
+            // failure is not a "build failed" condition.
+            image::save_cache(dockerfile, cache_key, &image::cache_dir())
+        }
     }
-    result
 }
 ```
 
@@ -379,8 +389,17 @@ Behavior contract:
 
 | Case | Return | Notification fired |
 |---|---|---|
-| Build succeeded | `Ok(())` | none (caller fires `send_success` at handoff) |
-| Build failed (any of the three steps) | `Err(e)` | `send_failure` fired internally before return |
+| `ensure_base_image` + `build` + `save_cache` all succeeded | `Ok(())` | none (caller fires `send_success` at handoff) |
+| `ensure_base_image` or `build` failed | `Err(e)` | `send_failure` fired internally before return |
+| `ensure_base_image` + `build` succeeded but `save_cache` failed | `Err(e)` | **none** — image exists and built correctly, so "build failed" would be wrong; caller's `send_success` is also skipped because `?` propagates the error. Net: no notification, error surfaces on stderr. |
+
+The last row is a deliberate trade-off. A `save_cache` failure is real
+(next invocation will rebuild unnecessarily because the cache hash
+doesn't match) but it is not a build failure — the image tag now points
+at a valid new image. Firing `send_failure` would mislead; firing
+`send_success` would be dishonest about the error. Silence is the least
+misleading option, and in practice `save_cache` writes a tiny SHA file
+and almost never fails.
 
 The helper does not check `needs_build` — callers do that so they can print
 their own context-appropriate message and perform site-specific setup (like
@@ -447,10 +466,21 @@ The `pull` and `no_cache` flags differ per site: stopped/not-found paths use
 - The `enabled` line is active (not commented out) so disabling is an
   explicit edit rather than an uncomment-and-edit
 
+**`run_build` decision core** (injected-closure tests against `run_build_inner`):
+
+- `ensure_base_image` returns `Err` → `on_failure` is invoked, `save_cache` is not reached, result is `Err`
+- `build` returns `Err` → `on_failure` is invoked, `save_cache` is not reached, result is `Err`
+- `ensure_base_image` + `build` return `Ok`, `save_cache` returns `Err` → `on_failure` is **not** invoked, result is `Err` (this is the key regression guard for the save_cache special case)
+- all three return `Ok` → `on_failure` is not invoked, result is `Ok`
+
+`run_build` itself is a thin wrapper that injects the real `image::*` calls
+and `send_failure` into `run_build_inner`. The wrapper has no logic to test;
+all the branching is in `run_build_inner`.
+
 ### Not tested automatically
 
 - `/dev/tty` open behavior — OS-dependent, not where bugs live
-- `run_build` end-to-end — thin composition of already-tested `image::*` functions and the `send_failure` function tested above
+- `run_build` wrapper end-to-end — closures it injects are already tested by the `image::*` tests and the `send_with`/`send_event` tests; the wrapper itself is four one-line closure captures with no branching
 - Actual visual appearance of notifications — manual verification
 
 ### Manual verification checklist
@@ -466,7 +496,7 @@ Covers each RunMode that triggers a rebuild, plus disable/fallback paths.
 7. **Config disabled.** Set `[notifications] enabled = false` → none of the above produce a notification; everything else still works.
 8. **Unsupported terminal.** In Terminal.app (or simulate via `TERM_PROGRAM=Apple_Terminal` and unset `ITERM_SESSION_ID`): no notification, no garbage bytes in the terminal output.
 9. **Output redirected.** `agentbox build > /dev/null 2>&1` on Ghostty → notification still fires (writes to `/dev/tty`, not stdout).
-10. **Cache hit (no rebuild).** Run any of 1–6 a second time without changing the Dockerfile → no notification fires (nothing was waited on).
+10. **Cache hit, session paths (no rebuild).** Run any of scenarios 3–6 a second time without changing the Dockerfile → no notification fires (the `needs_build` check returned false). *Not applicable to `agentbox build`*, which unconditionally rebuilds by design and will fire a notification every time.
 11. **`agentbox config init`.** Run on a fresh config path → emitted file contains the `[notifications]` section with its doc comments and `enabled = true`.
 
 ## Files touched
