@@ -24,6 +24,7 @@ pub struct Config {
     pub cpus: Option<usize>,
     pub memory: String,
     pub dockerfile: Option<PathBuf>,
+    pub default_agent: Option<String>,
     #[serde(default)]
     pub env: HashMap<String, String>,
     #[serde(default)]
@@ -47,6 +48,7 @@ impl Default for Config {
             cpus: None,
             memory: "8G".to_string(),
             dockerfile: None,
+            default_agent: None,
             env: HashMap::new(),
             profiles: HashMap::new(),
             volumes: Vec::new(),
@@ -92,6 +94,23 @@ impl Config {
             .get(cli_name)
             .map(|c| c.flags.as_slice())
             .unwrap_or(&[])
+    }
+
+    /// Resolve `default_agent` into a `CodingAgent`. Missing value falls
+    /// back to `Claude`. Unknown strings produce an error with a useful
+    /// message; the caller (runtime or setup) decides how to surface it.
+    pub fn resolve_default_agent(&self) -> Result<crate::agent::CodingAgent> {
+        use std::str::FromStr;
+
+        match self.default_agent.as_deref() {
+            None => Ok(crate::agent::CodingAgent::Claude),
+            Some(s) => crate::agent::CodingAgent::from_str(s).with_context(|| {
+                format!(
+                    "invalid default_agent = {:?}; expected \"claude\" or \"codex\"",
+                    s
+                )
+            }),
+        }
     }
 
     pub fn init_template() -> &'static str {
@@ -324,5 +343,73 @@ mod tests {
     fn test_cli_config_omitted() {
         let config: Config = toml::from_str("").unwrap();
         assert!(config.cli.is_empty());
+    }
+
+    #[test]
+    fn test_parse_default_agent_claude() {
+        let toml_str = r#"default_agent = "claude""#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.default_agent.as_deref(), Some("claude"));
+    }
+
+    #[test]
+    fn test_parse_default_agent_codex() {
+        let toml_str = r#"default_agent = "codex""#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.default_agent.as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn test_parse_default_agent_invalid_still_parses_as_string() {
+        // Invalid values must survive TOML parsing so setup can repair them
+        // interactively; validation happens in resolve_default_agent().
+        let toml_str = r#"default_agent = "gemini""#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.default_agent.as_deref(), Some("gemini"));
+    }
+
+    #[test]
+    fn test_default_agent_omitted_is_none() {
+        let config: Config = toml::from_str("").unwrap();
+        assert!(config.default_agent.is_none());
+    }
+
+    #[test]
+    fn test_resolve_default_agent_none_falls_back_to_claude() {
+        use crate::agent::CodingAgent;
+        let config = Config::default();
+        assert_eq!(
+            config.resolve_default_agent().unwrap(),
+            CodingAgent::Claude
+        );
+    }
+
+    #[test]
+    fn test_resolve_default_agent_claude_and_codex() {
+        use crate::agent::CodingAgent;
+        let mut config = Config::default();
+        config.default_agent = Some("claude".into());
+        assert_eq!(
+            config.resolve_default_agent().unwrap(),
+            CodingAgent::Claude
+        );
+        config.default_agent = Some("codex".into());
+        assert_eq!(
+            config.resolve_default_agent().unwrap(),
+            CodingAgent::Codex
+        );
+    }
+
+    #[test]
+    fn test_resolve_default_agent_invalid_errors_with_useful_message() {
+        let mut config = Config::default();
+        config.default_agent = Some("gemini".into());
+        let err = config.resolve_default_agent().unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("gemini"), "error message should mention the bad value; got: {msg}");
+        assert!(
+            msg.contains("claude") && msg.contains("codex"),
+            "error message should list valid options; got: {msg}"
+        );
     }
 }
