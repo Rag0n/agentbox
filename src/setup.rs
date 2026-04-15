@@ -293,6 +293,37 @@ fn print_indented(text: &str, indent: usize) {
     }
 }
 
+/// Testable core: reads one line at a time from the supplied callback, parses
+/// it, loops until it gets "1" or "2".
+fn prompt_default_agent_from<F>(mut read_line: F) -> Result<crate::agent::CodingAgent>
+where
+    F: FnMut() -> Result<String>,
+{
+    loop {
+        println!("\n        Which agent should be the default?");
+        println!("          1) Claude");
+        println!("          2) Codex");
+        print!("        > ");
+        std::io::stdout().flush()?;
+
+        let input = read_line()?;
+        match input.trim() {
+            "1" => return Ok(crate::agent::CodingAgent::Claude),
+            "2" => return Ok(crate::agent::CodingAgent::Codex),
+            _ => println!("        Invalid choice. Please enter 1 or 2."),
+        }
+    }
+}
+
+/// Production wrapper that reads from stdin.
+fn prompt_default_agent() -> Result<crate::agent::CodingAgent> {
+    prompt_default_agent_from(|| {
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        Ok(input)
+    })
+}
+
 fn prompt_menu(mut menu: Vec<MenuOption>) -> Result<()> {
     for (i, option) in menu.iter().enumerate() {
         println!("          {}) {}", i + 1, option.label);
@@ -538,5 +569,33 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("default_agent = \"codex\""));
         assert!(!content.contains("default_agent = \"claude\""));
+    }
+
+    #[test]
+    fn test_prompt_default_agent_accepts_1_as_claude() {
+        use crate::agent::CodingAgent;
+        let choice = prompt_default_agent_from(|| Ok("1".to_string())).unwrap();
+        assert_eq!(choice, CodingAgent::Claude);
+    }
+
+    #[test]
+    fn test_prompt_default_agent_accepts_2_as_codex() {
+        use crate::agent::CodingAgent;
+        let choice = prompt_default_agent_from(|| Ok("2".to_string())).unwrap();
+        assert_eq!(choice, CodingAgent::Codex);
+    }
+
+    #[test]
+    fn test_prompt_default_agent_loops_on_invalid_input() {
+        use crate::agent::CodingAgent;
+        let inputs = std::cell::RefCell::new(vec!["", "3", "foo", "2"].into_iter());
+        let choice = prompt_default_agent_from(|| {
+            let mut it = inputs.borrow_mut();
+            Ok(it.next().unwrap().to_string())
+        })
+        .unwrap();
+        assert_eq!(choice, CodingAgent::Codex);
+        // All inputs consumed
+        assert!(inputs.borrow_mut().next().is_none());
     }
 }
