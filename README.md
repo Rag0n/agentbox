@@ -43,8 +43,9 @@ agentbox shell
 agentbox shell -- npm test
 
 # Show container status (CPU, memory, project, sessions)
+# On a TTY it refreshes every 2s like top — exit with q or Ctrl+C.
+# Use --no-stream for a single snapshot (or pipe to skip live mode).
 agentbox status
-# `agentbox ls` is an alias for `status`
 
 # Remove current project's container
 agentbox rm
