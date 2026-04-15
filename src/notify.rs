@@ -3,7 +3,9 @@
 //! See `wiki/2026-04-15-build-notifications-design.md` for rationale.
 
 use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OscKind {
@@ -75,6 +77,81 @@ pub fn write_osc<W: Write>(
         OscKind::Osc99 => write!(writer, "\x1b]99;;{} — {}\x07", title, body)?,
     }
     Ok(())
+}
+
+/// Which kind of event the notification describes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Success,
+    Failure,
+}
+
+impl Kind {
+    fn title(self) -> &'static str {
+        match self {
+            Kind::Success => "agentbox: build complete",
+            Kind::Failure => "agentbox: build failed",
+        }
+    }
+}
+
+/// Testable core: write a notification to `writer`, given an already-detected
+/// OSC kind and a project name. No-op when disabled in config. Callers that
+/// reach the TTY use `send_success` / `send_failure`.
+fn send_with<W: Write>(
+    writer: &mut W,
+    kind: OscKind,
+    config: &crate::config::Config,
+    event: Kind,
+    project_name: &str,
+) -> io::Result<()> {
+    if !config.notifications.enabled {
+        return Ok(());
+    }
+    let body = sanitize(project_name);
+    write_osc(writer, kind, event.title(), &body)
+}
+
+/// Open `/dev/tty` for writing. Returns `None` if the controlling terminal
+/// is unavailable (non-TTY context, CI, etc.) — callers silently skip.
+fn open_tty() -> Option<File> {
+    OpenOptions::new().write(true).open(Path::new("/dev/tty")).ok()
+}
+
+/// Determine the project name to use as the notification body.
+/// Falls back to "agentbox" if the cwd basename can't be resolved.
+fn project_name() -> String {
+    std::env::current_dir()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "agentbox".to_string())
+}
+
+/// Fire the "agentbox: build complete" notification. No-op if disabled or
+/// no supported terminal detected.
+pub fn send_success(config: &crate::config::Config) {
+    let _ = send_event(config, Kind::Success);
+}
+
+/// Fire the "agentbox: build failed" notification. No-op if disabled or
+/// no supported terminal detected. Called internally from `run_build` on error.
+pub fn send_failure(config: &crate::config::Config) {
+    let _ = send_event(config, Kind::Failure);
+}
+
+fn send_event(config: &crate::config::Config, event: Kind) -> io::Result<()> {
+    if !config.notifications.enabled {
+        return Ok(());
+    }
+    let kind = match detect_terminal(|k| std::env::var(k).ok()) {
+        Some(k) => k,
+        None => return Ok(()),
+    };
+    let mut tty = match open_tty() {
+        Some(f) => f,
+        None => return Ok(()),
+    };
+    send_with(&mut tty, kind, config, event, &project_name())
 }
 
 #[cfg(test)]
@@ -205,5 +282,46 @@ mod tests {
         write_osc(&mut buf, OscKind::Osc99, "title", "body").unwrap();
         // Simple form, no metadata. See Kitty form choice in design doc.
         assert_eq!(buf, "\x1b]99;;title — body\x07".as_bytes());
+    }
+
+    use crate::config::Config;
+
+    fn enabled_config() -> Config {
+        Config::default()
+    }
+
+    fn disabled_config() -> Config {
+        let mut c = Config::default();
+        c.notifications.enabled = false;
+        c
+    }
+
+    #[test]
+    fn test_send_with_writes_success_osc_777() {
+        let mut buf = Vec::<u8>::new();
+        send_with(&mut buf, OscKind::Osc777, &enabled_config(), Kind::Success, "myapp").unwrap();
+        assert_eq!(buf, b"\x1b]777;notify;agentbox: build complete;myapp\x07");
+    }
+
+    #[test]
+    fn test_send_with_writes_failure_osc_9() {
+        let mut buf = Vec::<u8>::new();
+        send_with(&mut buf, OscKind::Osc9, &enabled_config(), Kind::Failure, "myapp").unwrap();
+        assert_eq!(buf, "\x1b]9;agentbox: build failed — myapp\x07".as_bytes());
+    }
+
+    #[test]
+    fn test_send_with_noop_when_disabled() {
+        let mut buf = Vec::<u8>::new();
+        send_with(&mut buf, OscKind::Osc777, &disabled_config(), Kind::Success, "myapp").unwrap();
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn test_send_with_sanitizes_project_name() {
+        let mut buf = Vec::<u8>::new();
+        send_with(&mut buf, OscKind::Osc777, &enabled_config(), Kind::Success, "my;project\nweird").unwrap();
+        // Semicolon and newline stripped from body.
+        assert_eq!(buf, b"\x1b]777;notify;agentbox: build complete;myprojectweird\x07");
     }
 }
