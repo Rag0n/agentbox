@@ -116,6 +116,10 @@ impl Config {
     pub fn init_template() -> &'static str {
         r#"# agentbox configuration
 
+# Default agent used by bare `agentbox`. `agentbox setup` will write this
+# for you; uncomment and edit to change it manually.
+# default_agent = "claude"   # or "codex"
+
 # Resources (auto-detected from host if not set)
 # cpus = 4          # default: half of host cores
 # memory = "8G"     # default: 8G
@@ -139,9 +143,14 @@ impl Config {
 # [profiles.name]
 # dockerfile = "/path/to/Dockerfile"
 
-# Extra CLI flags passed to the coding agent
-# [cli.claude]
-# flags = ["--append-system-prompt", "Your instructions here"]
+# Default flags for each coding agent.
+# Replace to override. The "dangerously-*" flags bypass in-agent
+# sandboxing because the container already isolates the agent.
+[cli.claude]
+flags = ["--dangerously-skip-permissions"]
+
+[cli.codex]
+flags = ["--dangerously-bypass-approvals-and-sandbox"]
 
 # Host bridge: execute commands on macOS host from container
 # [bridge]
@@ -245,7 +254,14 @@ mod tests {
         assert!(content.contains("# [env]"));
         assert!(content.contains("# [profiles."));
         assert!(content.contains("# volumes"));
-        assert!(content.contains("# [cli.claude]"));
+        assert!(content.contains("# default_agent"));
+        assert!(content.contains("[cli.claude]"));
+        assert!(content.contains("--dangerously-skip-permissions"));
+        assert!(content.contains("[cli.codex]"));
+        assert!(content.contains("--dangerously-bypass-approvals-and-sandbox"));
+        // default_agent stays commented out so setup prompts on fresh install
+        assert!(content.contains("# default_agent ="));
+        assert!(!content.lines().any(|l| l.trim_start().starts_with("default_agent =")));
     }
 
     #[test]
