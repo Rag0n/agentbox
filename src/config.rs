@@ -18,6 +18,18 @@ pub struct CliConfig {
     pub flags: Vec<String>,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct NotificationsConfig {
+    pub enabled: bool,
+}
+
+impl Default for NotificationsConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -35,6 +47,8 @@ pub struct Config {
     pub bridge: BridgeConfig,
     #[serde(default)]
     pub cli: HashMap<String, CliConfig>,
+    #[serde(default)]
+    pub notifications: NotificationsConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -54,6 +68,7 @@ impl Default for Config {
             volumes: Vec::new(),
             bridge: BridgeConfig::default(),
             cli: HashMap::new(),
+            notifications: NotificationsConfig::default(),
         }
     }
 }
@@ -172,6 +187,33 @@ mod tests {
         assert!(config.dockerfile.is_none());
         assert!(config.env.is_empty());
         assert!(config.profiles.is_empty());
+    }
+
+    #[test]
+    fn test_default_notifications_enabled() {
+        let config = Config::default();
+        assert!(config.notifications.enabled);
+    }
+
+    #[test]
+    fn test_parse_notifications_disabled() {
+        let toml_str = r#"
+            memory = "4G"
+
+            [notifications]
+            enabled = false
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(!config.notifications.enabled);
+    }
+
+    #[test]
+    fn test_parse_without_notifications_section_defaults_to_enabled() {
+        let toml_str = r#"
+            memory = "4G"
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(config.notifications.enabled);
     }
 
     #[test]
