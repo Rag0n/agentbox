@@ -234,9 +234,8 @@ pub async fn run_live_loop(
     ));
 
     let mut last_rows: Vec<Row> = Vec::new();
-    // Seeded with placeholders so a resize that arrives before the first
-    // frame can still render something sensible. The frame arm overwrites
-    // these on every tick; the initial values are defensive, not load-bearing.
+    // Initial seed handles the edge case of a resize event arriving before
+    // the first frame; the frame arm overwrites on every subsequent tick.
     #[allow(unused_assignments)]
     let mut last_widths = ColumnWidths::seeded();
     #[allow(unused_assignments)]
@@ -485,21 +484,16 @@ fn render_frame(
     let use_color = std::env::var_os("NO_COLOR").is_none();
     let table = format_table(rows, current_name, use_color, home, now_unix, Some(widths));
 
-    // In raw mode, LF does not carriage-return; every line after the first
-    // would drift right by the previous line's width. Translate \n to \r\n
-    // at the edge.
-    let mut body = String::with_capacity(table.len() + 64);
-    body.push_str(&table);
-    body.push('\n');
-    body.push_str(footer_msg.unwrap_or(""));
-    body.push('\n');
-    body.push_str("press q or Ctrl+C to exit");
-    body.push('\n');
-    let body = body.replace('\n', "\r\n");
-
+    // In raw mode, LF does not carriage-return; translate at the edge so
+    // lines after the first don't drift right by the previous line's width.
     let mut stdout = io::stdout();
     let _ = write!(stdout, "\x1b[H\x1b[J");
-    let _ = stdout.write_all(body.as_bytes());
+    let _ = stdout.write_all(table.replace('\n', "\r\n").as_bytes());
+    let _ = write!(
+        stdout,
+        "\r\n{}\r\npress q or Ctrl+C to exit\r\n",
+        footer_msg.unwrap_or(""),
+    );
     let _ = stdout.flush();
 }
 
@@ -672,15 +666,11 @@ mod tests {
     }
 
     #[test]
-    fn test_min_terminal_cols_matches_seeded_widths() {
-        // Guard against silent drift: if someone changes a seed value in
-        // `ColumnWidths::seeded()` without updating the minimum, this
-        // recomputes the expected minimum from the same seeds and
-        // compares.
-        let w = ColumnWidths::seeded();
-        let expected = w.name + w.status + w.project + w.cpu + w.mem + w.uptime + w.sessions + 12;
-        assert_eq!(min_terminal_cols(), expected);
-        // Sanity: with current seeds (4+6+7+6+10+6+8 + 12), min is 59.
+    fn test_min_terminal_cols_is_sanity_checked() {
+        // With current seeds (NAME=4, STATUS=6, PROJECT=7, CPU=6, MEM=10,
+        // UPTIME=6, SESSIONS=8, plus 6 × 2-space separators = 12), min is
+        // 59. If a seed changes and this breaks, update the expected value
+        // deliberately — the number is a user-visible minimum width.
         assert_eq!(min_terminal_cols(), 59);
     }
 
@@ -716,13 +706,11 @@ mod tests {
     }
 }
 
-/// Minimum terminal width required to render the seeded header row:
-/// the sum of seeded column widths plus a two-space separator between
-/// each of the seven columns. Derived from `ColumnWidths::seeded()` at
-/// runtime so the two stay in sync if seeds change.
+/// Minimum terminal width required to render the seeded header row.
+/// Derived from `ColumnWidths::seeded()` so seeds and minimum stay
+/// in sync automatically.
 fn min_terminal_cols() -> usize {
-    let w = ColumnWidths::seeded();
-    w.name + w.status + w.project + w.cpu + w.mem + w.uptime + w.sessions + 6 * 2
+    ColumnWidths::seeded().total_width()
 }
 
 /// Fail-fast check run before entering alt screen so the error lands on

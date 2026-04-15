@@ -364,6 +364,16 @@ impl ColumnWidths {
             }
         }
     }
+
+    /// Total rendered width of a row at these widths — sum of all
+    /// columns plus a 2-space separator between each adjacent pair.
+    /// Used to check whether the terminal is wide enough to render
+    /// without wrapping.
+    pub fn total_width(&self) -> usize {
+        self.name + self.status + self.project + self.cpu
+            + self.mem + self.uptime + self.sessions
+            + (HEADERS.len() - 1) * 2
+    }
 }
 
 /// Render a row as 7 cells of strings.
