@@ -47,9 +47,13 @@ enum Commands {
         #[arg(long)]
         all: bool,
     },
-    /// Show rich container status (CPU, memory, project, sessions)
-    #[command(alias = "ls")]
-    Status,
+    /// Show rich container status (CPU, memory, project, sessions). On a
+    /// TTY, refreshes every 2s until `q` or Ctrl+C.
+    Status {
+        /// Skip live mode even on a TTY — run a single snapshot and exit.
+        #[arg(long)]
+        no_stream: bool,
+    },
     /// Force rebuild the container image (--no-cache for clean build)
     Build {
         /// Do not use cache when building the image
@@ -427,8 +431,14 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Some(Commands::Status) => {
-            status::run(cli.verbose)?;
+        Some(Commands::Status { no_stream }) => {
+            use std::io::IsTerminal;
+            let is_tty = std::io::stdout().is_terminal();
+            if is_tty && !no_stream {
+                status::live::run(cli.verbose)?;
+            } else {
+                status::run(cli.verbose)?;
+            }
             Ok(())
         }
         Some(Commands::Build { no_cache }) => {
@@ -555,14 +565,38 @@ mod tests {
 
     #[test]
     fn test_status_subcommand() {
-        let cli = Cli::try_parse_from(["agentbox", "status"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Status)));
+        let cli = Cli::parse_from(&["agentbox", "status"]);
+        assert!(matches!(cli.command, Some(Commands::Status { no_stream: false })));
     }
 
     #[test]
-    fn test_status_alias_ls() {
-        let cli = Cli::try_parse_from(["agentbox", "ls"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Status)));
+    fn test_status_no_stream_flag_parses() {
+        let cli = Cli::parse_from(&["agentbox", "status", "--no-stream"]);
+        match cli.command {
+            Some(Commands::Status { no_stream }) => assert!(no_stream),
+            _ => panic!("expected Status"),
+        }
+    }
+
+    #[test]
+    fn test_status_default_has_no_stream_false() {
+        let cli = Cli::parse_from(&["agentbox", "status"]);
+        match cli.command {
+            Some(Commands::Status { no_stream }) => assert!(!no_stream),
+            _ => panic!("expected Status"),
+        }
+    }
+
+    #[test]
+    fn test_ls_alias_is_removed() {
+        let res = Cli::try_parse_from(&["agentbox", "ls"]);
+        // Without the alias, "ls" should be parsed as a task, not as the status command
+        if let Ok(cli) = &res {
+            assert!(cli.command.is_none(), "`ls` should not parse as a command");
+            assert_eq!(cli.task, vec!["ls"], "ls should be parsed as a task, not a command");
+        } else {
+            panic!("parse should succeed, but ls should be a task not a command");
+        }
     }
 
 
