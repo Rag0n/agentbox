@@ -34,14 +34,14 @@ Pure prep. Move the existing file into a submodule directory and add the new dep
 - Rename: `src/status.rs` → `src/status/mod.rs`
 - Modify: `Cargo.toml`
 
-- [ ] **Step 1.1: Move the file**
+- [x] **Step 1.1: Move the file**
 
 Run:
 ```
 mkdir -p src/status && git mv src/status.rs src/status/mod.rs
 ```
 
-- [ ] **Step 1.2: Add `crossterm` to `Cargo.toml`**
+- [x] **Step 1.2: Add `crossterm` to `Cargo.toml`**
 
 Modify the `[dependencies]` section. Add after `libc = "0.2"`:
 
@@ -51,12 +51,12 @@ crossterm = { version = "0.28", features = ["event-stream"] }
 
 The `event-stream` feature is required for the async `EventStream` used by the live loop.
 
-- [ ] **Step 1.3: Verify the build still passes**
+- [x] **Step 1.3: Verify the build still passes**
 
 Run: `cargo build`
 Expected: clean build, no errors.
 
-- [ ] **Step 1.4: Verify existing tests still pass**
+- [x] **Step 1.4: Verify existing tests still pass**
 
 Run: `cargo test`
 Expected: 201 passed; 0 failed.

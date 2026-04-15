@@ -34,6 +34,25 @@ impl State {
     }
 }
 
+#[derive(Debug)]
+pub struct ParseError {
+    message: String,
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "parse error: {}", self.message)
+    }
+}
+
+impl std::error::Error for ParseError {}
+
+impl ParseError {
+    pub fn new(msg: impl Into<String>) -> Self {
+        Self { message: msg.into() }
+    }
+}
+
 /// Apple epoch (2001-01-01 UTC) → Unix epoch (1970-01-01 UTC) offset, in seconds.
 const APPLE_EPOCH_OFFSET: i64 = 978_307_200;
 
@@ -42,10 +61,10 @@ const APPLE_EPOCH_OFFSET: i64 = 978_307_200;
 /// cpu_pct, mem_*) are left as None — they get populated by later passes.
 /// Stale detection is *not* done here; the caller adds it.
 ///
-/// Returns an empty vec on parse failure (matches the existing
-/// `parse_container_list` behavior in `container.rs`).
-pub fn parse_ls_json(json: &str) -> Vec<Row> {
-    let containers: Vec<serde_json::Value> = serde_json::from_str(json).unwrap_or_default();
+/// Returns Err if JSON parsing fails, distinguishing it from "no agentbox containers".
+pub fn parse_ls_json(json: &str) -> Result<Vec<Row>, ParseError> {
+    let containers: Vec<serde_json::Value> = serde_json::from_str(json)
+        .map_err(|e| ParseError::new(format!("container ls JSON: {}", e)))?;
     let mut rows = Vec::new();
     for c in &containers {
         let name = c
@@ -82,7 +101,7 @@ pub fn parse_ls_json(json: &str) -> Vec<Row> {
         });
     }
     rows.sort_by(|a, b| a.name.cmp(&b.name));
-    rows
+    Ok(rows)
 }
 
 /// Parse a memory value like "2.18" with unit "GiB" into bytes.
@@ -398,7 +417,11 @@ fn fetch_basic(verbose: bool) -> Result<Vec<Row>> {
         .output()
         .map_err(|e| anyhow::anyhow!("failed to run 'container ls': {}", e))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut rows = parse_ls_json(&stdout);
+    let mut rows = parse_ls_json(&stdout)
+        .unwrap_or_else(|e| {
+            eprintln!("[agentbox] warning: could not parse container ls output: {}", e);
+            Vec::new()
+        });
 
     // Sessions
     let ps_out = Command::new("ps").args(["-eo", "pid,args"]).output();
@@ -506,8 +529,20 @@ mod tests {
     }]"#;
 
     #[test]
+    fn test_parse_ls_json_malformed_returns_err() {
+        assert!(parse_ls_json("not json").is_err());
+        assert!(parse_ls_json("").is_err());
+        assert!(parse_ls_json("{not an array}").is_err());
+    }
+
+    #[test]
+    fn test_parse_ls_json_valid_empty_returns_ok_empty() {
+        assert_eq!(parse_ls_json("[]").unwrap(), vec![]);
+    }
+
+    #[test]
     fn test_parse_ls_json_one_running() {
-        let rows = parse_ls_json(LS_JSON_ONE_RUNNING);
+        let rows = parse_ls_json(LS_JSON_ONE_RUNNING).unwrap();
         assert_eq!(rows.len(), 1);
         let row = &rows[0];
         assert_eq!(row.name, "agentbox-myapp-abc123");
@@ -528,7 +563,7 @@ mod tests {
             {"status":"running","configuration":{"id":"buildkit","initProcess":{"workingDirectory":"/"}}},
             {"status":"running","configuration":{"id":"agentbox-x-aaaaaa","initProcess":{"workingDirectory":"/tmp/x"}}}
         ]"#;
-        let rows = parse_ls_json(json);
+        let rows = parse_ls_json(json).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].name, "agentbox-x-aaaaaa");
     }
@@ -539,7 +574,7 @@ mod tests {
             "status":"stopped",
             "configuration":{"id":"agentbox-x-aaaaaa","initProcess":{"workingDirectory":"/tmp/x"}}
         }]"#;
-        let rows = parse_ls_json(json);
+        let rows = parse_ls_json(json).unwrap();
         assert_eq!(rows[0].state, State::Stopped);
     }
 
@@ -549,7 +584,7 @@ mod tests {
             "status":"stopped",
             "configuration":{"id":"agentbox-x-aaaaaa","initProcess":{"workingDirectory":"/tmp/x"}}
         }]"#;
-        let rows = parse_ls_json(json);
+        let rows = parse_ls_json(json).unwrap();
         assert_eq!(rows[0].started_unix, None);
     }
 
@@ -559,14 +594,8 @@ mod tests {
             "status":"running",
             "configuration":{"id":"agentbox-x-aaaaaa","initProcess":{}}
         }]"#;
-        let rows = parse_ls_json(json);
+        let rows = parse_ls_json(json).unwrap();
         assert_eq!(rows[0].workdir, "");
-    }
-
-    #[test]
-    fn test_parse_ls_json_invalid_json_returns_empty() {
-        assert!(parse_ls_json("not json").is_empty());
-        assert!(parse_ls_json("").is_empty());
     }
 
     #[test]
@@ -575,7 +604,7 @@ mod tests {
             {"status":"running","configuration":{"id":"agentbox-zz-aaaaaa","initProcess":{"workingDirectory":"/z"}}},
             {"status":"running","configuration":{"id":"agentbox-aa-aaaaaa","initProcess":{"workingDirectory":"/a"}}}
         ]"#;
-        let rows = parse_ls_json(json);
+        let rows = parse_ls_json(json).unwrap();
         assert_eq!(rows[0].name, "agentbox-aa-aaaaaa");
         assert_eq!(rows[1].name, "agentbox-zz-aaaaaa");
     }
@@ -587,7 +616,7 @@ mod tests {
             {"status":"stopped","startedDate":797000000.0,"configuration":{"id":"agentbox-b-222222","initProcess":{"workingDirectory":"/b"}}},
             {"status":"running","configuration":{"id":"buildkit","initProcess":{"workingDirectory":"/"}}}
         ]"#;
-        let rows = parse_ls_json(json);
+        let rows = parse_ls_json(json).unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].state, State::Running);
         assert_eq!(rows[1].state, State::Stopped);
