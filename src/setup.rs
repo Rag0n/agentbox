@@ -518,12 +518,22 @@ fn prompt_default_agent() -> Result<crate::agent::CodingAgent> {
     })
 }
 
-fn prompt_menu(mut menu: Vec<MenuOption>) -> Result<()> {
+fn render_menu<W: Write>(menu: &[MenuOption], out: &mut W) -> std::io::Result<()> {
     for (i, option) in menu.iter().enumerate() {
-        println!("          {}) {}", i + 1, option.label);
+        if let Some(header) = option.header_before {
+            writeln!(out)?;
+            writeln!(out, "          {}", header)?;
+        }
+        writeln!(out, "            {}) {}", i + 1, option.label)?;
     }
+    Ok(())
+}
+
+fn prompt_menu(mut menu: Vec<MenuOption>) -> Result<()> {
+    let mut stdout = std::io::stdout();
+    render_menu(&menu, &mut stdout)?;
     print!("        > ");
-    std::io::stdout().flush()?;
+    stdout.flush()?;
 
     let mut input = String::new();
     std::io::stdin().read_line(&mut input)?;
@@ -1056,5 +1066,32 @@ mod tests {
         cli.insert("codex".into(), CliConfig { flags: vec![] });
         let c = Config { cli, ..Config::default() };
         assert!(matches!(check_agent_flags_with_config(&c), Status::Ok));
+    }
+
+    #[test]
+    fn test_render_menu_formats_headers_and_options() {
+        let menu = vec![
+            MenuOption {
+                label: "First",
+                action: Box::new(|| Ok(())),
+                header_before: Some("Recommended:"),
+            },
+            MenuOption {
+                label: "Second",
+                action: Box::new(|| Ok(())),
+                header_before: Some("Alternatives:"),
+            },
+            MenuOption {
+                label: "Third",
+                action: Box::new(|| Ok(())),
+                header_before: None,
+            },
+        ];
+        let mut buf = Vec::new();
+        render_menu(&menu, &mut buf).unwrap();
+        let rendered = String::from_utf8(buf).unwrap();
+
+        let expected = "\n          Recommended:\n            1) First\n\n          Alternatives:\n            2) Second\n            3) Third\n";
+        assert_eq!(rendered, expected);
     }
 }
