@@ -588,19 +588,6 @@ mod tests {
     }
 
     #[test]
-    fn test_ls_alias_is_removed() {
-        let res = Cli::try_parse_from(&["agentbox", "ls"]);
-        // Without the alias, "ls" should be parsed as a task, not as the status command
-        if let Ok(cli) = &res {
-            assert!(cli.command.is_none(), "`ls` should not parse as a command");
-            assert_eq!(cli.task, vec!["ls"], "ls should be parsed as a task, not a command");
-        } else {
-            panic!("parse should succeed, but ls should be a task not a command");
-        }
-    }
-
-
-    #[test]
     fn test_build_subcommand() {
         let cli = Cli::try_parse_from(["agentbox", "build"]).unwrap();
         assert!(matches!(

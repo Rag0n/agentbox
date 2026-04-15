@@ -1750,15 +1750,11 @@ fn test_status_default_has_no_stream_false() {
         _ => panic!("expected Status"),
     }
 }
-
-#[test]
-fn test_ls_alias_is_removed() {
-    let res = Cli::try_parse_from(&["agentbox", "ls"]);
-    assert!(res.is_err(), "`ls` alias should no longer parse");
-}
 ```
 
-Also update any existing `test_status_alias_ls` / `test_status_subcommand` tests if present. Find them by searching `grep -n 'test_status' src/main.rs`. Delete `test_status_alias_ls` (or similar) entirely. Update `test_status_subcommand` to match the new shape:
+No dedicated `ls`-removal test. Once the alias is gone, `ls` is just a non-subcommand token — indistinguishable from `agentbox hg` or `agentbox foo` — and pinning its behavior with a test would imply it's special when it isn't.
+
+Also find any existing `test_status_alias_ls` / `test_status_subcommand` tests (`grep -n 'test_status' src/main.rs`) and delete `test_status_alias_ls` (or similar) entirely. Update `test_status_subcommand` to match the new shape:
 
 ```rust
 #[test]
@@ -1771,7 +1767,7 @@ fn test_status_subcommand() {
 - [ ] **Step 12.2: Run tests to verify they fail**
 
 Run: `cargo test test_status -- --nocapture`
-Expected: FAIL — `Status` variant doesn't have `no_stream` field, `ls` alias still works.
+Expected: FAIL — `Status` variant doesn't have `no_stream` field; `ls` still resolves to `Commands::Status` via the alias, so the "no command, task=[ls]" assertion fails.
 
 - [ ] **Step 12.3: Update the `Status` variant in `Commands` enum**
 
@@ -1876,6 +1872,6 @@ These are manual — document results in the PR description rather than automati
 2. **Ctrl+C mid-fetch kills child**: Run `cargo run -- status`, press Ctrl+C (or `q`) during a tick. Expect prompt returns without a ~2s delay, no orphan `container stats` process (`ps aux | grep "container stats"`).
 3. **Piped mode stays fast-only**: Run `cargo run -- status | cat`. Expect fast output (<200ms), no ~2s stats call.
 4. **`--no-stream` on TTY**: Run `cargo run -- status --no-stream`. Expect single snapshot including CPU/MEM row, then exit.
-5. **`ls` alias gone**: Run `cargo run -- ls`. Expect clap error `unrecognized subcommand`.
+5. **`ls` alias gone**: Run `cargo run -- ls`. Expect it to fall through to the task path (same as `cargo run -- hg` or any unknown word) — i.e. a regular Claude session with the task `ls`, not a status snapshot. No special error, no special handling: `ls` is just a non-subcommand token once the alias is removed.
 6. **Final one-shot on exit**: Press `q` in live mode. Expect the last snapshot to remain in scrollback below the shell prompt.
 7. **Panic restores terminal**: Inject a temporary `panic!()` in `run_live_loop`, run live mode. Expect the panic message to appear on a normal (non-alt-screen) terminal, cursor visible, echo working. Remove the panic injection after.
