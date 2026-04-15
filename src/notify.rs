@@ -8,7 +8,7 @@ use std::io::{self, Write};
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OscKind {
+enum OscKind {
     /// OSC 777 — Ghostty, WezTerm. Supports separate title and body fields.
     Osc777,
     /// OSC 9 — iTerm2. Single text field (title and body joined with em-dash).
@@ -26,8 +26,7 @@ pub enum OscKind {
 /// because `std::env::var` returns `Ok("")` in that case. Without this, a
 /// user who explicitly un-set `KITTY_WINDOW_ID=` would still be detected
 /// as Kitty.
-pub fn detect_terminal<F: Fn(&str) -> Option<String>>(env: F) -> Option<OscKind> {
-    // Helper: treat empty strings as absent.
+fn detect_terminal<F: Fn(&str) -> Option<String>>(env: F) -> Option<OscKind> {
     let get = |k: &str| env(k).filter(|s| !s.is_empty());
 
     match get("TERM_PROGRAM").as_deref() {
@@ -55,7 +54,7 @@ pub fn detect_terminal<F: Fn(&str) -> Option<String>>(env: F) -> Option<OscKind>
 ///
 /// Applied uniformly across OSC kinds; `;` isn't strictly required for
 /// OSC 9/99 but stripping universally keeps the helper simple.
-pub fn sanitize(s: &str) -> String {
+fn sanitize(s: &str) -> String {
     s.chars()
         .filter(|c| !matches!(*c, '\x1b' | '\x07' | ';' | '\n' | '\r'))
         .collect()
@@ -65,7 +64,7 @@ pub fn sanitize(s: &str) -> String {
 ///
 /// Callers are responsible for sanitizing user-controlled input (typically
 /// the body) via `sanitize` before calling this.
-pub fn write_osc<W: Write>(
+fn write_osc<W: Write>(
     writer: &mut W,
     kind: OscKind,
     title: &str,
@@ -81,7 +80,7 @@ pub fn write_osc<W: Write>(
 
 /// Which kind of event the notification describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Kind {
+enum Kind {
     Success,
     Failure,
 }
@@ -135,7 +134,7 @@ pub fn send_success(config: &crate::config::Config) {
 
 /// Fire the "agentbox: build failed" notification. No-op if disabled or
 /// no supported terminal detected. Called internally from `run_build` on error.
-pub fn send_failure(config: &crate::config::Config) {
+fn send_failure(config: &crate::config::Config) {
     let _ = send_event(config, Kind::Failure);
 }
 
@@ -175,30 +174,14 @@ fn run_build_inner(
             on_failure();
             Err(e)
         }
-        Ok(()) => {
-            // Build succeeded; save_cache failures are not "build failed".
-            save_cache()
-        }
+        Ok(()) => save_cache(),
     }
 }
 
-/// Run the standard rebuild sequence (`ensure_base_image` + `build`, then
-/// `save_cache`). On a true build failure (either base-image prep or the
-/// main image build), fires `send_failure` before propagating the error.
-///
-/// `save_cache` is treated specially: it's filesystem bookkeeping that runs
-/// *after* the image is already built. If it fails (disk full, permissions,
-/// etc.) the image actually exists and built correctly; we propagate the
-/// error but do NOT fire `send_failure`, because "build failed" would be
-/// incorrect — the build succeeded, only the cache metadata didn't persist.
-/// The caller's `send_success` also won't fire, because the `?` propagation
-/// aborts before reaching it. Net effect on save_cache failure: no
-/// notification, error surfaces on stderr. (In practice this is rare; the
-/// cache file is tiny.)
-///
-/// Does not print any user-facing message — callers own pre-build output
-/// because different sites need different wording. Does not check
-/// `image::needs_build` — callers have already decided a build is required.
+/// Run `ensure_base_image` + `build` + `save_cache`. Fires `send_failure`
+/// on a build-phase error (ensure_base or build); a `save_cache` error
+/// propagates but does NOT fire `send_failure` — the image is already built.
+/// Callers own pre-build output and the `needs_build` check.
 pub fn run_build(
     config: &crate::config::Config,
     dockerfile: &str,
