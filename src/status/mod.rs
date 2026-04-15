@@ -208,6 +208,28 @@ pub fn parse_stats_json(json: &str) -> Result<HashMap<String, RawStats>, ParseEr
     Ok(out)
 }
 
+/// Compute CPU percentage from two consecutive samples.
+///
+/// Inputs are in microseconds. `prev_usec` and `curr_usec` are the
+/// cumulative CPU time samples; `elapsed_usec` is the wall-clock time
+/// between samples.
+///
+/// Returns `None` when:
+/// - `elapsed_usec` is zero (division by zero)
+/// - `curr_usec < prev_usec` (counter reset, e.g. container restarted)
+///
+/// 100% = one fully utilized core. Multi-core containers can exceed 100%.
+pub fn compute_cpu_pct(prev_usec: u64, curr_usec: u64, elapsed_usec: u64) -> Option<f64> {
+    if elapsed_usec == 0 {
+        return None;
+    }
+    if curr_usec < prev_usec {
+        return None;
+    }
+    let delta = (curr_usec - prev_usec) as f64;
+    Some(delta / elapsed_usec as f64 * 100.0)
+}
+
 /// Format a number of elapsed seconds as a compact uptime string.
 /// Returns "0m" for zero, sub-minute, or negative durations (clock skew).
 pub fn format_uptime(elapsed_secs: i64) -> String {
@@ -1126,6 +1148,45 @@ buildkit                     0.01%  1.50 GiB / 2.00 GiB    2.11 GiB / 7.49 MiB  
         let map = parse_stats_json(json).unwrap();
         assert_eq!(map.len(), 1);
         assert!(map.contains_key("agentbox-ok"));
+    }
+
+    #[test]
+    fn test_compute_cpu_pct_normal_delta() {
+        // 1_000_000 usec over 2 seconds = 50% of one core
+        let r = compute_cpu_pct(0, 1_000_000, 2_000_000);
+        assert!((r.unwrap() - 50.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_compute_cpu_pct_hundred_percent_one_core() {
+        // 2s of CPU over 2s wall = 100% one core
+        let r = compute_cpu_pct(0, 2_000_000, 2_000_000);
+        assert!((r.unwrap() - 100.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_compute_cpu_pct_multi_core() {
+        // 4s of CPU over 2s wall = 200% (two cores fully utilized)
+        let r = compute_cpu_pct(0, 4_000_000, 2_000_000);
+        assert!((r.unwrap() - 200.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_compute_cpu_pct_counter_reset_returns_none() {
+        // Previous sample greater than current → container restarted.
+        // Skip this sample rather than emit a negative value.
+        assert_eq!(compute_cpu_pct(5_000_000, 1_000_000, 2_000_000), None);
+    }
+
+    #[test]
+    fn test_compute_cpu_pct_zero_elapsed_returns_none() {
+        assert_eq!(compute_cpu_pct(0, 1_000_000, 0), None);
+    }
+
+    #[test]
+    fn test_compute_cpu_pct_no_work_done() {
+        // No CPU used, non-zero elapsed = 0%
+        assert_eq!(compute_cpu_pct(100, 100, 2_000_000), Some(0.0));
     }
 }
 
