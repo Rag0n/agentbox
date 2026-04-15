@@ -459,13 +459,24 @@ fn render_frame(
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    let mut stdout = io::stdout();
-    let _ = write!(stdout, "\x1b[H\x1b[J");
     let use_color = std::env::var_os("NO_COLOR").is_none();
     let table = format_table(rows, current_name, use_color, home, now_unix, Some(widths));
-    let _ = stdout.write_all(table.as_bytes());
-    let _ = writeln!(stdout, "\n{}", footer_msg.unwrap_or(""));
-    let _ = writeln!(stdout, "press q or Ctrl+C to exit");
+
+    // In raw mode, LF does not carriage-return; every line after the first
+    // would drift right by the previous line's width. Translate \n to \r\n
+    // at the edge.
+    let mut body = String::with_capacity(table.len() + 64);
+    body.push_str(&table);
+    body.push('\n');
+    body.push_str(footer_msg.unwrap_or(""));
+    body.push('\n');
+    body.push_str("press q or Ctrl+C to exit");
+    body.push('\n');
+    let body = body.replace('\n', "\r\n");
+
+    let mut stdout = io::stdout();
+    let _ = write!(stdout, "\x1b[H\x1b[J");
+    let _ = stdout.write_all(body.as_bytes());
     let _ = stdout.flush();
 }
 
