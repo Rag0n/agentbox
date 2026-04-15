@@ -29,4 +29,19 @@ WORKDIR /home/user
 
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
+# Codex CLI (OpenAI). GitHub release tarball contains a single binary
+# named codex-<triple>; rename to plain codex under ~/.local/bin to match
+# the claude install location.
+RUN ARCH=$(dpkg --print-architecture) \
+ && case "$ARCH" in \
+      amd64) TRIPLE="x86_64-unknown-linux-musl"  ;; \
+      arm64) TRIPLE="aarch64-unknown-linux-musl" ;; \
+      *) echo "unsupported arch: $ARCH" >&2; exit 1 ;; \
+    esac \
+ && mkdir -p /home/user/.local/bin \
+ && curl -fsSL "https://github.com/openai/codex/releases/latest/download/codex-${TRIPLE}.tar.gz" \
+  | tar xz -C /tmp \
+ && mv "/tmp/codex-${TRIPLE}" /home/user/.local/bin/codex \
+ && chmod +x /home/user/.local/bin/codex
+
 ENTRYPOINT ["entrypoint.sh"]
