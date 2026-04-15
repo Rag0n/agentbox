@@ -20,6 +20,9 @@ const AUTH_KEYS: &[&str] = &[ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN];
 
 pub enum Status {
     Ok,
+    /// Non-blocking pass with an advisory note printed under the step label.
+    /// Increments `passed`, so the overall setup can still complete cleanly.
+    OkWithInfo(String),
     /// Auto-fixable: orchestrator runs `fix()` directly, no consent prompt.
     AutoFix {
         explanation: String,
@@ -129,6 +132,23 @@ fn decide_auth(
         }
     }
     credentials_exists
+}
+
+/// Extension used by step 5: a codex-default user does not need claude auth
+/// for setup to pass.
+#[cfg(test)]
+fn decide_auth_with_codex_short_circuit(
+    config: &Config,
+    host_env: &dyn Fn(&str) -> Option<String>,
+    credentials_exists: bool,
+) -> bool {
+    if matches!(
+        config.resolve_default_agent(),
+        Ok(crate::agent::CodingAgent::Codex)
+    ) {
+        return true;
+    }
+    decide_auth(config, host_env, credentials_exists)
 }
 
 /// Idempotently add a key to the `[env]` section of the config file at `path`.
@@ -309,11 +329,18 @@ fn credentials_file_path() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".claude/.credentials.json"))
 }
 
-fn check_authentication() -> Status {
-    let config = match Config::load() {
-        Ok(c) => c,
-        Err(e) => return Status::Errored(e),
-    };
+fn check_authentication_with_config(config: &Config) -> Status {
+    // Codex-default users: skip blocking Claude auth. Pass with advisory.
+    if matches!(
+        config.resolve_default_agent(),
+        Ok(crate::agent::CodingAgent::Codex)
+    ) {
+        return Status::OkWithInfo(
+            "Skipped — default_agent = codex.\n\
+             Re-run `agentbox setup` after changing default_agent to \"claude\"\n\
+             if you want Claude auth configured.".to_string(),
+        );
+    }
 
     let credentials_exists = credentials_file_path()
         .and_then(|p| std::fs::metadata(p).ok())
@@ -321,13 +348,20 @@ fn check_authentication() -> Status {
 
     let host_env = |key: &str| std::env::var(key).ok();
 
-    if decide_auth(&config, &host_env, credentials_exists) {
+    if decide_auth(config, &host_env, credentials_exists) {
         Status::Ok
     } else {
         Status::Interactive {
             explanation: AUTH_EXPLANATION.to_string(),
             menu: build_auth_menu(),
         }
+    }
+}
+
+fn check_authentication() -> Status {
+    match Config::load() {
+        Ok(c) => check_authentication_with_config(&c),
+        Err(e) => Status::Errored(e),
     }
 }
 
@@ -406,6 +440,11 @@ pub fn run_setup() -> Result<()> {
         match check_fn() {
             Status::Ok => {
                 println!("✓");
+                passed += 1;
+            }
+            Status::OkWithInfo(info) => {
+                println!("✓");
+                print_indented(&info, 8);
                 passed += 1;
             }
             Status::AutoFix { explanation, fix } => {
@@ -678,5 +717,53 @@ mod tests {
             decide_default_agent_status(&c),
             DefaultAgentStatus::NeedsPrompt
         ));
+    }
+
+    #[test]
+    fn test_decide_auth_short_circuit_codex_default() {
+        let mut c = Config::default();
+        c.default_agent = Some("codex".into());
+        assert!(decide_auth_with_codex_short_circuit(
+            &c,
+            &|_k| None,
+            false
+        ));
+    }
+
+    #[test]
+    fn test_decide_auth_no_short_circuit_when_claude_default() {
+        let mut c = Config::default();
+        c.default_agent = Some("claude".into());
+        // No credentials, no env vars, not short-circuited → false (prompt needed)
+        assert!(!decide_auth_with_codex_short_circuit(
+            &c,
+            &|_k| None,
+            false
+        ));
+    }
+
+    #[test]
+    fn test_decide_auth_no_short_circuit_when_default_agent_missing() {
+        // Defensive: no default_agent set → treated as claude → normal flow
+        let c = Config::default();
+        assert!(!decide_auth_with_codex_short_circuit(
+            &c,
+            &|_k| None,
+            false
+        ));
+    }
+
+    #[test]
+    fn test_check_authentication_returns_ok_with_info_for_codex_default() {
+        let mut c = Config::default();
+        c.default_agent = Some("codex".into());
+        let status = check_authentication_with_config(&c);
+        match status {
+            Status::OkWithInfo(info) => {
+                assert!(info.contains("Skipped"));
+                assert!(info.contains("codex"));
+            }
+            _ => panic!("expected Status::OkWithInfo"),
+        }
     }
 }
