@@ -550,26 +550,8 @@ fn main() -> Result<()> {
         }
         None => {
             let config = config::Config::load()?;
-            let task_str = if cli.task.is_empty() {
-                None
-            } else {
-                Some(cli.task.join(" "))
-            };
-
-            let mut cli_flags: Vec<String> = config.cli_flags("claude").to_vec();
-            cli_flags.extend(passthrough_flags);
-
-            let mode = container::RunMode::Agent {
-                agent: agent::CodingAgent::Claude,
-                task: task_str,
-                cli_flags,
-            };
-
-            let code = run_session(&cli, &config, mode)?;
-            if code != 0 {
-                bail!("container exited with status {}", code);
-            }
-            Ok(())
+            let agent = config.resolve_default_agent()?;
+            run_agent(&cli, &config, agent, cli.task.clone(), passthrough_flags)
         }
     }
 }
@@ -984,5 +966,18 @@ mod tests {
             passthrough,
             vec!["-c", "model_reasoning_effort=high"]
         );
+    }
+
+    #[test]
+    fn test_bare_agentbox_uses_config_default_agent() {
+        use crate::agent::CodingAgent;
+        // default_agent omitted → Claude
+        let c = config::Config::default();
+        assert_eq!(c.resolve_default_agent().unwrap(), CodingAgent::Claude);
+
+        // default_agent = codex → Codex
+        let mut c = config::Config::default();
+        c.default_agent = Some("codex".into());
+        assert_eq!(c.resolve_default_agent().unwrap(), CodingAgent::Codex);
     }
 }
