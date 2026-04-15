@@ -81,6 +81,76 @@ pub async fn fetch_once(
     }
 }
 
+use std::collections::HashMap;
+use std::time::Instant;
+
+use async_trait::async_trait;
+
+use crate::status::{parse_ls_json, parse_stats_json, RawStats, Row};
+
+/// Per-container previous-sample tracking for CPU% delta computation.
+#[derive(Debug, Clone, Copy)]
+pub struct PrevSample {
+    pub cpu_usec: u64,
+    pub taken_at: Instant,
+}
+
+/// Abstraction over the three subprocess calls live mode makes.
+/// Real code uses `ContainerSource`; tests use a stub.
+#[async_trait]
+pub trait StatsSource: Send {
+    async fn fetch_stats(&mut self) -> Result<HashMap<String, RawStats>>;
+    async fn fetch_ls(&mut self) -> Result<Vec<Row>>;
+    async fn fetch_ps(&mut self) -> Result<String>;
+}
+
+/// Production `StatsSource` — shells out to the `container` and `ps`
+/// binaries, racing each subprocess against the shutdown signal.
+pub struct ContainerSource {
+    pub verbose: bool,
+    pub shutdown: watch::Receiver<bool>,
+}
+
+#[async_trait]
+impl StatsSource for ContainerSource {
+    async fn fetch_stats(&mut self) -> Result<HashMap<String, RawStats>> {
+        if self.verbose {
+            eprintln!("[agentbox] container stats --format json");
+        }
+        let bytes = fetch_once(
+            "container",
+            &["stats", "--format", "json"],
+            &mut self.shutdown,
+        ).await?;
+        let text = std::str::from_utf8(&bytes)
+            .context("container stats produced non-UTF-8 output")?;
+        Ok(parse_stats_json(text)?)
+    }
+
+    async fn fetch_ls(&mut self) -> Result<Vec<Row>> {
+        if self.verbose {
+            eprintln!("[agentbox] container ls --all --format json");
+        }
+        let bytes = fetch_once(
+            "container",
+            &["ls", "--all", "--format", "json"],
+            &mut self.shutdown,
+        ).await?;
+        let text = std::str::from_utf8(&bytes)
+            .context("container ls produced non-UTF-8 output")?;
+        Ok(parse_ls_json(text)?)
+    }
+
+    async fn fetch_ps(&mut self) -> Result<String> {
+        let bytes = fetch_once(
+            "ps",
+            &["-eo", "pid,args"],
+            &mut self.shutdown,
+        ).await?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+}
+
 /// RAII guard for TUI terminal state. On construction (when stdout is a
 /// TTY) it enters the alternate screen, hides the cursor, and enables
 /// raw mode. On drop (including panic unwind) it reverses all three.
@@ -201,5 +271,51 @@ mod tests {
         // case instead of panicking. This just verifies no panic / no
         // process death.
         let _ = TerminalGuard::new_if_tty();
+    }
+
+    use std::collections::HashMap;
+    use crate::status::RawStats;
+
+    struct StubSource {
+        stats: Vec<HashMap<String, RawStats>>,
+        idx: std::cell::Cell<usize>,
+    }
+
+    #[async_trait::async_trait]
+    impl StatsSource for StubSource {
+        async fn fetch_stats(&mut self) -> Result<HashMap<String, RawStats>> {
+            let i = self.idx.get();
+            self.idx.set(i + 1);
+            Ok(self.stats[i.min(self.stats.len() - 1)].clone())
+        }
+
+        async fn fetch_ls(&mut self) -> Result<Vec<crate::status::Row>> {
+            Ok(vec![])
+        }
+
+        async fn fetch_ps(&mut self) -> Result<String> {
+            Ok(String::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stub_stats_source_returns_sequential_frames() {
+        let frames = vec![
+            HashMap::from([("a".to_string(), RawStats {
+                cpu_usage_usec: 0,
+                memory_usage_bytes: 100,
+                memory_limit_bytes: 1000,
+            })]),
+            HashMap::from([("a".to_string(), RawStats {
+                cpu_usage_usec: 1_000_000,
+                memory_usage_bytes: 200,
+                memory_limit_bytes: 1000,
+            })]),
+        ];
+        let mut src = StubSource { stats: frames, idx: std::cell::Cell::new(0) };
+        let f1 = src.fetch_stats().await.unwrap();
+        let f2 = src.fetch_stats().await.unwrap();
+        assert_eq!(f1.get("a").unwrap().cpu_usage_usec, 0);
+        assert_eq!(f2.get("a").unwrap().cpu_usage_usec, 1_000_000);
     }
 }
