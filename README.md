@@ -150,6 +150,22 @@ flags = ["--dangerously-bypass-approvals-and-sandbox"]
 dockerfile = "/path/to/mystack.Dockerfile"
 ```
 
+### Terminal notifications
+
+After a long image rebuild, agentbox sends a terminal notification so you can tab away without missing when it's done. Notifications fire only when a rebuild actually runs (not on cached session starts, not for the coding agent's own prompts — those are covered by agent-specific plugins like `agent-notifications`).
+
+Supported terminals (native, no extra install): Ghostty, WezTerm, iTerm2, Kitty. Other terminals silently skip — no visible garbage.
+
+On by default. Disable:
+
+```toml
+# ~/.config/agentbox/config.toml
+[notifications]
+enabled = false
+```
+
+Success fires with title `agentbox: build complete`; failure with `agentbox: build failed`. Body is the project directory name.
+
 ## Custom Dockerfiles
 
 ### Per-project
