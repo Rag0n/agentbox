@@ -183,29 +183,27 @@ agentbox --profile mystack
 
 ### Claude Code
 
-macOS Keychain isn't accessible from inside the Linux container, so Claude Code needs credentials passed via environment variables, or a one-time login from inside the container (which persists under `~/.claude/`).
+macOS Keychain isn't reachable from inside the Linux container. Claude Code needs either a one-time login from inside the container or credentials passed via environment variable.
 
 **Easiest approach: Run `agentbox setup`** — it will guide you through the options.
 
-Alternatively, here are the three methods:
+Three methods, in order of recommendation:
 
-**Option A: API key** — set `ANTHROPIC_API_KEY` in your config or shell:
+**Option A (recommended, Pro/Max subscription): Log in once inside the container.**
 
-```toml
-# ~/.config/agentbox/config.toml
-[env]
-ANTHROPIC_API_KEY = ""  # empty = inherit from host env
-```
+Run `agentbox`, type `/login` inside Claude, and complete the browser flow. Claude Code writes `~/.claude/.credentials.json`. Because agentbox mounts `~/.claude` into the container, the login persists across all future sessions — you only do this once.
 
-**Option B: OAuth token (Pro/Max subscription):**
+Nothing to configure ahead of time. This is the simplest path for Pro/Max subscribers.
 
-1. Generate a long-lived token on the host:
+**Option B (Pro/Max subscription): Long-lived OAuth token (`CLAUDE_CODE_OAUTH_TOKEN`).**
+
+Best when an interactive login isn't practical — headless machines, CI, or automated provisioning.
+
+1. Generate a token on the host:
 
    ```bash
    claude setup-token
    ```
-
-   This prints an export command with your OAuth token. Copy the token value.
 
 2. Add it to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.):
 
@@ -221,7 +219,25 @@ ANTHROPIC_API_KEY = ""  # empty = inherit from host env
    CLAUDE_CODE_OAUTH_TOKEN = ""  # empty = inherit from host env
    ```
 
-Your `~/.claude` settings directory is mounted into the container, so project settings, CLAUDE.md trust, and preferences carry over automatically. Only the secret token needs to be passed explicitly.
+**Option C (Console API billing): API key (`ANTHROPIC_API_KEY`).**
+
+Use this if you bill via the Anthropic Console (pay-as-you-go) rather than a Claude subscription.
+
+1. Export the key in your shell profile (`~/.zshrc`, `~/.bashrc`, etc.):
+
+   ```bash
+   export ANTHROPIC_API_KEY="sk-..."
+   ```
+
+2. Tell agentbox to pass it into the container:
+
+   ```toml
+   # ~/.config/agentbox/config.toml
+   [env]
+   ANTHROPIC_API_KEY = ""  # empty = inherit from host env
+   ```
+
+Regardless of which option you pick, `~/.claude` is mounted into the container, so project settings, CLAUDE.md trust, and preferences carry over automatically.
 
 ### OpenAI Codex
 
