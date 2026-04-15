@@ -70,6 +70,18 @@ enum Commands {
     Setup,
     /// Open a bash shell in the container (no Claude)
     Shell,
+    /// Run Claude Code (explicit; default when no subcommand is used)
+    Claude {
+        /// Task to run in headless mode
+        #[arg(trailing_var_arg = true)]
+        task: Vec<String>,
+    },
+    /// Run OpenAI Codex CLI
+    Codex {
+        /// Task to run in headless mode
+        #[arg(trailing_var_arg = true)]
+        task: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -385,6 +397,35 @@ fn run_session(
     result
 }
 
+fn run_agent(
+    cli: &Cli,
+    config: &config::Config,
+    agent: agent::CodingAgent,
+    task_tokens: Vec<String>,
+    passthrough_flags: Vec<String>,
+) -> Result<()> {
+    let task_str = if task_tokens.is_empty() {
+        None
+    } else {
+        Some(task_tokens.join(" "))
+    };
+
+    let mut cli_flags: Vec<String> = config.cli_flags(agent.config_key()).to_vec();
+    cli_flags.extend(passthrough_flags);
+
+    let mode = container::RunMode::Agent {
+        agent,
+        task: task_str,
+        cli_flags,
+    };
+
+    let code = run_session(cli, config, mode)?;
+    if code != 0 {
+        bail!("container exited with status {}", code);
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     // Check if we're invoked as hostexec (symlink mode)
     let binary_name = std::env::args()
@@ -486,6 +527,26 @@ fn main() -> Result<()> {
                 std::process::exit(code);
             }
             Ok(())
+        }
+        Some(Commands::Claude { ref task }) => {
+            let config = config::Config::load()?;
+            run_agent(
+                &cli,
+                &config,
+                agent::CodingAgent::Claude,
+                task.clone(),
+                passthrough_flags,
+            )
+        }
+        Some(Commands::Codex { ref task }) => {
+            let config = config::Config::load()?;
+            run_agent(
+                &cli,
+                &config,
+                agent::CodingAgent::Codex,
+                task.clone(),
+                passthrough_flags,
+            )
         }
         None => {
             let config = config::Config::load()?;
@@ -863,5 +924,65 @@ mod tests {
         let cli = Cli::try_parse_from(["agentbox", "shell", "--verbose"]).unwrap();
         assert!(matches!(cli.command, Some(Commands::Shell)));
         assert!(cli.verbose);
+    }
+
+    #[test]
+    fn test_claude_subcommand_no_task() {
+        let cli = Cli::try_parse_from(["agentbox", "claude"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Claude { ref task }) if task.is_empty()
+        ));
+    }
+
+    #[test]
+    fn test_claude_subcommand_with_task() {
+        let cli =
+            Cli::try_parse_from(["agentbox", "claude", "fix", "the", "tests"]).unwrap();
+        match cli.command {
+            Some(Commands::Claude { task }) => {
+                assert_eq!(task, vec!["fix", "the", "tests"]);
+            }
+            _ => panic!("expected Claude subcommand"),
+        }
+    }
+
+    #[test]
+    fn test_codex_subcommand_no_task() {
+        let cli = Cli::try_parse_from(["agentbox", "codex"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Codex { ref task }) if task.is_empty()
+        ));
+    }
+
+    #[test]
+    fn test_codex_subcommand_with_task() {
+        let cli = Cli::try_parse_from(["agentbox", "codex", "fix tests"]).unwrap();
+        match cli.command {
+            Some(Commands::Codex { task }) => {
+                assert_eq!(task, vec!["fix tests"]);
+            }
+            _ => panic!("expected Codex subcommand"),
+        }
+    }
+
+    #[test]
+    fn test_codex_subcommand_with_passthrough_flags() {
+        let raw_args: Vec<String> = vec![
+            "agentbox".into(),
+            "codex".into(),
+            "fix".into(),
+            "--".into(),
+            "-c".into(),
+            "model_reasoning_effort=high".into(),
+        ];
+        let (agentbox_args, passthrough) = split_at_double_dash(raw_args);
+        let cli = Cli::try_parse_from(agentbox_args).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Codex { ref task }) if task == &vec!["fix"]));
+        assert_eq!(
+            passthrough,
+            vec!["-c", "model_reasoning_effort=high"]
+        );
     }
 }
