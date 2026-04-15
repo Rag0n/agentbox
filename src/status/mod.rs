@@ -1,3 +1,5 @@
+pub mod live;
+
 use anyhow::Result;
 use std::collections::HashMap;
 use std::io::{self, IsTerminal, Write};
