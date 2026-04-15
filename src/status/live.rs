@@ -234,7 +234,12 @@ pub async fn run_live_loop(
     ));
 
     let mut last_rows: Vec<Row> = Vec::new();
+    // Seeded with placeholders so a resize that arrives before the first
+    // frame can still render something sensible. The frame arm overwrites
+    // these on every tick; the initial values are defensive, not load-bearing.
+    #[allow(unused_assignments)]
     let mut last_widths = ColumnWidths::seeded();
+    #[allow(unused_assignments)]
     let mut last_footer: Option<String> = None;
 
     let mut shutdown_rx = shutdown_tx.subscribe();
@@ -257,17 +262,35 @@ pub async fn run_live_loop(
                 break;
             }
             evt = maybe_evt => {
-                if let Some(Ok(Event::Key(KeyEvent { code, modifiers, kind, .. }))) = evt {
-                    if kind == KeyEventKind::Release {
-                        continue;
+                match evt {
+                    Some(Ok(Event::Key(KeyEvent { code, modifiers, kind, .. }))) => {
+                        if kind == KeyEventKind::Release {
+                            continue;
+                        }
+                        let quit = matches!(code, KeyCode::Char('q') | KeyCode::Esc)
+                            || (modifiers.contains(KeyModifiers::CONTROL)
+                                && matches!(code, KeyCode::Char('c')));
+                        if quit {
+                            let _ = shutdown_tx.send(true);
+                            break;
+                        }
                     }
-                    let quit = matches!(code, KeyCode::Char('q') | KeyCode::Esc)
-                        || (modifiers.contains(KeyModifiers::CONTROL)
-                            && matches!(code, KeyCode::Char('c')));
-                    if quit {
-                        let _ = shutdown_tx.send(true);
-                        break;
+                    Some(Ok(Event::Resize(_, _))) => {
+                        // Terminal resized: the emulator may have reflowed or cleared
+                        // parts of the alt screen. Redraw with the last known frame so
+                        // the table reflects the new geometry immediately instead of
+                        // waiting up to a full tick.
+                        if opts.render_enabled {
+                            render_frame(
+                                &last_rows,
+                                current_name.as_deref(),
+                                &home,
+                                &last_widths,
+                                last_footer.as_deref(),
+                            );
+                        }
                     }
+                    _ => {}
                 }
             }
             maybe_frame = frame_rx.recv() => {
@@ -648,6 +671,19 @@ mod tests {
         assert_eq!(f2.get("a").unwrap().cpu_usage_usec, 1_000_000);
     }
 
+    #[test]
+    fn test_min_terminal_cols_matches_seeded_widths() {
+        // Guard against silent drift: if someone changes a seed value in
+        // `ColumnWidths::seeded()` without updating the minimum, this
+        // recomputes the expected minimum from the same seeds and
+        // compares.
+        let w = ColumnWidths::seeded();
+        let expected = w.name + w.status + w.project + w.cpu + w.mem + w.uptime + w.sessions + 12;
+        assert_eq!(min_terminal_cols(), expected);
+        // Sanity: with current seeds (4+6+7+6+10+6+8 + 12), min is 59.
+        assert_eq!(min_terminal_cols(), 59);
+    }
+
     #[tokio::test]
     async fn test_run_live_with_stub_terminates_on_shutdown() {
         use std::collections::HashMap;
@@ -680,11 +716,44 @@ mod tests {
     }
 }
 
+/// Minimum terminal width required to render the seeded header row:
+/// the sum of seeded column widths plus a two-space separator between
+/// each of the seven columns. Derived from `ColumnWidths::seeded()` at
+/// runtime so the two stay in sync if seeds change.
+fn min_terminal_cols() -> usize {
+    let w = ColumnWidths::seeded();
+    w.name + w.status + w.project + w.cpu + w.mem + w.uptime + w.sessions + 6 * 2
+}
+
+/// Fail-fast check run before entering alt screen so the error lands on
+/// the normal terminal. If the terminal size query fails, we proceed —
+/// not knowing is different from knowing it's too small, and the user
+/// gets line-wrapping at worst.
+fn check_terminal_width() -> Result<()> {
+    let (cols, _rows) = match crossterm::terminal::size() {
+        Ok(s) => s,
+        Err(_) => return Ok(()),
+    };
+    let min = min_terminal_cols();
+    if (cols as usize) < min {
+        bail!(
+            "terminal is too narrow for live status ({} cols; need at least {}). \
+             Resize the window, or use `agentbox status --no-stream` / pipe the output \
+             to skip live mode.",
+            cols,
+            min
+        );
+    }
+    Ok(())
+}
+
 /// Top-level entry point: installs terminal guard, runs the loop,
 /// then (after guard drop) flushes buffered diagnostics to stderr
 /// and prints the last rendered frame to normal stdout so the last
 /// state stays in scrollback.
 pub fn run(verbose: bool) -> Result<()> {
+    check_terminal_width()?;
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
