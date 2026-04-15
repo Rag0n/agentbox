@@ -8,6 +8,7 @@ mod container;
 mod git;
 mod hostexec;
 mod image;
+mod notify;
 mod setup;
 mod status;
 
