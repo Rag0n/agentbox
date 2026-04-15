@@ -70,7 +70,7 @@ Make parse failures distinguishable from "no agentbox containers" by returning `
 **Files:**
 - Modify: `src/status/mod.rs` (lines currently around 47-86)
 
-- [ ] **Step 2.1: Write failing tests for the new signature**
+- [x] **Step 2.1: Write failing tests for the new signature**
 
 At the top of the `#[cfg(test)] mod tests` block in `src/status/mod.rs`, add:
 
@@ -90,12 +90,12 @@ fn test_parse_ls_json_valid_empty_returns_ok_empty() {
 
 Also update every existing `test_parse_ls_json_*` call site in the file. Search for `parse_ls_json(` in the tests and change `let rows = parse_ls_json(...)` to `let rows = parse_ls_json(...).unwrap()`. For `test_parse_ls_json_malformed` (if present) assert `is_err()` instead.
 
-- [ ] **Step 2.2: Run tests to verify they fail**
+- [x] **Step 2.2: Run tests to verify they fail**
 
 Run: `cargo test parse_ls_json -- --nocapture`
 Expected: FAIL — either compile errors (signature mismatch) or test assertion failures.
 
-- [ ] **Step 2.3: Add `ParseError` enum and change `parse_ls_json`**
+- [x] **Step 2.3: Add `ParseError` enum and change `parse_ls_json`**
 
 In `src/status/mod.rs`, near the top (after the existing `use` lines), add:
 
@@ -166,7 +166,7 @@ pub fn parse_ls_json(json: &str) -> Result<Vec<Row>, ParseError> {
 }
 ```
 
-- [ ] **Step 2.4: Update the one in-tree caller**
+- [x] **Step 2.4: Update the one in-tree caller**
 
 In the same file, find `fetch_basic` (currently around line 392). Change the line `let mut rows = parse_ls_json(&stdout);` to:
 
@@ -180,7 +180,7 @@ let mut rows = parse_ls_json(&stdout)
 
 This keeps one-shot mode tolerant of parse failures (warns + continues with empty list) — the live path handles it differently via `StatsSource`.
 
-- [ ] **Step 2.5: Run all tests to verify**
+- [x] **Step 2.5: Run all tests to verify**
 
 Run: `cargo test`
 Expected: all pass — both new tests and existing tests (now calling `.unwrap()`).

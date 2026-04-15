@@ -164,6 +164,50 @@ pub fn parse_stats_text(text: &str) -> HashMap<String, (f64, u64, u64)> {
     out
 }
 
+/// Raw counters from `container stats --format json`. The CPU counter is
+/// cumulative microseconds since the container started; compute percentage
+/// from a delta via `compute_cpu_pct`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RawStats {
+    pub cpu_usage_usec: u64,
+    pub memory_usage_bytes: u64,
+    pub memory_limit_bytes: u64,
+}
+
+/// Parse `container stats --format json` output. Returns a map from
+/// container id to raw counters. Entries missing any of the three
+/// required fields are skipped silently (defensive against partial
+/// JSON). Malformed top-level JSON returns `Err`.
+pub fn parse_stats_json(json: &str) -> Result<HashMap<String, RawStats>, ParseError> {
+    let entries: Vec<serde_json::Value> = serde_json::from_str(json)
+        .map_err(|e| ParseError::new(format!("container stats JSON: {}", e)))?;
+    let mut out = HashMap::new();
+    for e in &entries {
+        let id = match e.get("id").and_then(|v| v.as_str()) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        let cpu = match e.get("cpuUsageUsec").and_then(|v| v.as_u64()) {
+            Some(v) => v,
+            None => continue,
+        };
+        let mu = match e.get("memoryUsageBytes").and_then(|v| v.as_u64()) {
+            Some(v) => v,
+            None => continue,
+        };
+        let ml = match e.get("memoryLimitBytes").and_then(|v| v.as_u64()) {
+            Some(v) => v,
+            None => continue,
+        };
+        out.insert(id, RawStats {
+            cpu_usage_usec: cpu,
+            memory_usage_bytes: mu,
+            memory_limit_bytes: ml,
+        });
+    }
+    Ok(out)
+}
+
 /// Format a number of elapsed seconds as a compact uptime string.
 /// Returns "0m" for zero, sub-minute, or negative durations (clock skew).
 pub fn format_uptime(elapsed_secs: i64) -> String {
@@ -1034,6 +1078,54 @@ buildkit                     0.01%  1.50 GiB / 2.00 GiB    2.11 GiB / 7.49 MiB  
         }];
         apply_stale_to_rows(&mut rows);
         assert_eq!(rows[0].state, State::Running);
+    }
+
+    const STATS_JSON_SAMPLE: &str = r#"[
+    {
+        "id": "agentbox-agentbox-71e6bc",
+        "cpuUsageUsec": 1315142153,
+        "memoryUsageBytes": 4180971520,
+        "memoryLimitBytes": 8589934592,
+        "numProcesses": 94,
+        "networkRxBytes": 265925507,
+        "networkTxBytes": 171185114,
+        "blockReadBytes": 1142607872,
+        "blockWriteBytes": 250761216
+    }
+]"#;
+
+    #[test]
+    fn test_parse_stats_json_one_container() {
+        let map = parse_stats_json(STATS_JSON_SAMPLE).unwrap();
+        assert_eq!(map.len(), 1);
+        let s = map.get("agentbox-agentbox-71e6bc").unwrap();
+        assert_eq!(s.cpu_usage_usec, 1_315_142_153);
+        assert_eq!(s.memory_usage_bytes, 4_180_971_520);
+        assert_eq!(s.memory_limit_bytes, 8_589_934_592);
+    }
+
+    #[test]
+    fn test_parse_stats_json_empty_array_is_ok() {
+        let map = parse_stats_json("[]").unwrap();
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_parse_stats_json_malformed_returns_err() {
+        assert!(parse_stats_json("not json").is_err());
+        assert!(parse_stats_json("").is_err());
+        assert!(parse_stats_json("{not array}").is_err());
+    }
+
+    #[test]
+    fn test_parse_stats_json_skips_entries_missing_required_fields() {
+        let json = r#"[
+        {"id": "agentbox-ok", "cpuUsageUsec": 100, "memoryUsageBytes": 200, "memoryLimitBytes": 300},
+        {"id": "agentbox-missing-cpu", "memoryUsageBytes": 1, "memoryLimitBytes": 2}
+    ]"#;
+        let map = parse_stats_json(json).unwrap();
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key("agentbox-ok"));
     }
 }
 
