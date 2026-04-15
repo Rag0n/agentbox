@@ -200,6 +200,51 @@ fn ensure_default_agent_in_config(path: &Path, agent: crate::agent::CodingAgent)
     Ok(())
 }
 
+/// Pure decision for step 4. Separated from `check_default_agent` so tests
+/// don't have to touch the filesystem. The inner `CodingAgent` on `Ok` is
+/// used by tests to verify the decision resolves to the right agent, even
+/// though production only cares about Ok-vs-NeedsPrompt.
+#[allow(dead_code)]
+enum DefaultAgentStatus {
+    Ok(crate::agent::CodingAgent),
+    NeedsPrompt,
+}
+
+fn decide_default_agent_status(config: &Config) -> DefaultAgentStatus {
+    use std::str::FromStr;
+    match config.default_agent.as_deref() {
+        Some(s) => match crate::agent::CodingAgent::from_str(s) {
+            Ok(agent) => DefaultAgentStatus::Ok(agent),
+            Err(_) => DefaultAgentStatus::NeedsPrompt,
+        },
+        None => DefaultAgentStatus::NeedsPrompt,
+    }
+}
+
+fn check_default_agent() -> Status {
+    let config = match Config::load() {
+        Ok(c) => c,
+        Err(e) => return Status::Errored(e),
+    };
+    match decide_default_agent_status(&config) {
+        DefaultAgentStatus::Ok(_) => Status::Ok,
+        DefaultAgentStatus::NeedsPrompt => Status::AutoFix {
+            explanation:
+                "Default agent not set. Pick which agent runs when you type bare `agentbox`."
+                    .to_string(),
+            fix: Box::new(|| {
+                let choice = prompt_default_agent()?;
+                ensure_default_agent_in_config(&Config::config_path(), choice)?;
+                println!(
+                    "        ✓ Set default_agent = \"{}\"",
+                    choice.config_key()
+                );
+                Ok(())
+            }),
+        },
+    }
+}
+
 const AUTH_EXPLANATION: &str = "macOS Keychain isn't reachable from the Linux container, so
 Claude Code needs credentials via env var, or a one-time login
 from inside the container (the token persists under ~/.claude).";
@@ -350,7 +395,8 @@ pub fn run_setup() -> Result<()> {
         ("Apple Container CLI", check_container_cli),
         ("Container system running", check_container_system),
         ("Config file", check_config_file),
-        ("Authentication", check_authentication),
+        ("Default agent", check_default_agent),           // NEW
+        ("Claude authentication", check_authentication),  // RENAMED from "Authentication"
     ];
 
     let mut passed = 0;
@@ -597,5 +643,40 @@ mod tests {
         assert_eq!(choice, CodingAgent::Codex);
         // All inputs consumed
         assert!(inputs.borrow_mut().next().is_none());
+    }
+
+    #[test]
+    fn test_decide_default_agent_status_ok_when_valid() {
+        use crate::agent::CodingAgent;
+        let mut c = Config::default();
+        c.default_agent = Some("codex".into());
+        assert!(matches!(
+            decide_default_agent_status(&c),
+            DefaultAgentStatus::Ok(CodingAgent::Codex)
+        ));
+        c.default_agent = Some("claude".into());
+        assert!(matches!(
+            decide_default_agent_status(&c),
+            DefaultAgentStatus::Ok(CodingAgent::Claude)
+        ));
+    }
+
+    #[test]
+    fn test_decide_default_agent_status_needs_prompt_when_missing() {
+        let c = Config::default();
+        assert!(matches!(
+            decide_default_agent_status(&c),
+            DefaultAgentStatus::NeedsPrompt
+        ));
+    }
+
+    #[test]
+    fn test_decide_default_agent_status_needs_prompt_when_invalid() {
+        let mut c = Config::default();
+        c.default_agent = Some("gemini".into());
+        assert!(matches!(
+            decide_default_agent_status(&c),
+            DefaultAgentStatus::NeedsPrompt
+        ));
     }
 }
