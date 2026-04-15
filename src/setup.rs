@@ -365,6 +365,65 @@ fn check_authentication() -> Status {
     }
 }
 
+/// Inspect `cli_auth_credentials_store` in a codex config.toml file.
+/// Returns `true` when the user should be warned: the value is explicitly
+/// `"keyring"`, `"auto"`, `"ephemeral"`, or the TOML is malformed. Missing
+/// file and missing key both mean "use the documented default (`"file"`)",
+/// so they return `false`.
+fn codex_store_warning_needed(path: &Path) -> bool {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return false; // no config file → default is "file"
+    };
+    match content.parse::<toml::Table>() {
+        Err(_) => true, // malformed — point it out
+        Ok(doc) => match doc.get("cli_auth_credentials_store").and_then(|v| v.as_str()) {
+            // Missing key or explicit "file" → happy path
+            None | Some("file") => false,
+            // Any other value → warn
+            _ => true,
+        },
+    }
+}
+
+fn codex_config_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".codex/config.toml"))
+}
+
+const CODEX_SIGNIN_HINT: &str =
+    "First time using codex? Run `agentbox codex`.\n\
+     On an unauthenticated container, codex's onboarding menu appears.\n\
+     Pick the device code sign-in flow (for remote/headless machines),\n\
+     then open the URL shown on your Mac and enter the code. The option\n\
+     may also be reachable by picking ChatGPT sign-in first and pressing\n\
+     Esc when the browser step appears.";
+
+const CODEX_STORE_WARNING: &str =
+    "Heads-up: codex in the container cannot reach the macOS Keychain.\n\
+     For auth to persist, add this line to ~/.codex/config.toml:\n\n    \
+     cli_auth_credentials_store = \"file\"\n\n\
+     If you already signed in with a non-file backend, sign in again from\n\
+     within `agentbox codex` (or run `codex login` on the Mac) after\n\
+     changing the setting.";
+
+/// Testable core: takes an explicit path (or `None` to skip the store check).
+/// The production wrapper reads from `~/.codex/config.toml`.
+fn check_codex_authentication_with_path(codex_config: Option<&Path>) -> Status {
+    let mut info = String::new();
+    if let Some(path) = codex_config {
+        if codex_store_warning_needed(path) {
+            info.push_str(CODEX_STORE_WARNING);
+            info.push_str("\n\n");
+        }
+    }
+    info.push_str(CODEX_SIGNIN_HINT);
+    Status::OkWithInfo(info)
+}
+
+fn check_codex_authentication() -> Status {
+    let path = codex_config_path();
+    check_codex_authentication_with_path(path.as_deref())
+}
+
 fn print_indented(text: &str, indent: usize) {
     let pad = " ".repeat(indent);
     for line in text.lines() {
@@ -429,8 +488,9 @@ pub fn run_setup() -> Result<()> {
         ("Apple Container CLI", check_container_cli),
         ("Container system running", check_container_system),
         ("Config file", check_config_file),
-        ("Default agent", check_default_agent),           // NEW
-        ("Claude authentication", check_authentication),  // RENAMED from "Authentication"
+        ("Default agent", check_default_agent),
+        ("Claude authentication", check_authentication),
+        ("Codex authentication", check_codex_authentication),  // NEW
     ];
 
     let mut passed = 0;
@@ -762,6 +822,104 @@ mod tests {
             Status::OkWithInfo(info) => {
                 assert!(info.contains("Skipped"));
                 assert!(info.contains("codex"));
+            }
+            _ => panic!("expected Status::OkWithInfo"),
+        }
+    }
+
+    #[test]
+    fn test_codex_store_no_warning_when_config_missing() {
+        // Missing file means codex will use its documented default ("file"),
+        // which is what we want. No warning.
+        let tmp = tempdir().unwrap();
+        let missing = tmp.path().join("nonexistent.toml");
+        assert!(!codex_store_warning_needed(&missing));
+    }
+
+    #[test]
+    fn test_codex_store_no_warning_when_key_missing() {
+        // Same rationale: missing key resolves to "file" default.
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "# comment only\n").unwrap();
+        assert!(!codex_store_warning_needed(&path));
+    }
+
+    #[test]
+    fn test_codex_store_warning_when_non_file_backend() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        for bad in ["keyring", "auto", "ephemeral"] {
+            std::fs::write(
+                &path,
+                format!("cli_auth_credentials_store = \"{}\"\n", bad),
+            )
+            .unwrap();
+            assert!(
+                codex_store_warning_needed(&path),
+                "expected warning for backend {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_codex_store_no_warning_when_file_backend() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "cli_auth_credentials_store = \"file\"\n").unwrap();
+        assert!(!codex_store_warning_needed(&path));
+    }
+
+    #[test]
+    fn test_codex_store_warning_when_malformed_toml() {
+        // Unparseable config — err on the side of warning so the user sees
+        // their config is busted.
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "this = is = not toml").unwrap();
+        assert!(codex_store_warning_needed(&path));
+    }
+
+    #[test]
+    fn test_check_codex_authentication_returns_ok_with_info_always() {
+        // The check never blocks. It returns OkWithInfo carrying at minimum
+        // the device-code sign-in hint.
+        let status = check_codex_authentication_with_path(None);
+        match status {
+            Status::OkWithInfo(info) => {
+                // Asserting on "device code" (lowercased) is resilient to
+                // exact menu-label drift in codex's TUI.
+                assert!(info.to_lowercase().contains("device code"));
+            }
+            _ => panic!("expected Status::OkWithInfo"),
+        }
+    }
+
+    #[test]
+    fn test_check_codex_authentication_includes_store_warning_when_needed() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "cli_auth_credentials_store = \"keyring\"\n").unwrap();
+        let status = check_codex_authentication_with_path(Some(&path));
+        match status {
+            Status::OkWithInfo(info) => {
+                assert!(info.contains("cli_auth_credentials_store"));
+                assert!(info.to_lowercase().contains("device code"));
+            }
+            _ => panic!("expected Status::OkWithInfo"),
+        }
+    }
+
+    #[test]
+    fn test_check_codex_authentication_omits_store_warning_when_file_default() {
+        // Missing config (user has the documented default) → no warning.
+        let tmp = tempdir().unwrap();
+        let missing = tmp.path().join("nonexistent.toml");
+        let status = check_codex_authentication_with_path(Some(&missing));
+        match status {
+            Status::OkWithInfo(info) => {
+                assert!(!info.contains("cli_auth_credentials_store"));
+                assert!(info.to_lowercase().contains("device code"));
             }
             _ => panic!("expected Status::OkWithInfo"),
         }
