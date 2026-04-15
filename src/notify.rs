@@ -3,7 +3,6 @@
 //! See `wiki/2026-04-15-build-notifications-design.md` for rationale.
 
 use anyhow::Result;
-use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
@@ -220,6 +219,7 @@ pub fn run_build(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     fn env_map<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
         let map: HashMap<String, String> =
