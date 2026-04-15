@@ -45,6 +45,7 @@ pub enum Status {
 pub struct MenuOption {
     pub label: &'static str,
     pub action: Box<dyn FnOnce() -> Result<()>>,
+    pub header_before: Option<&'static str>,
 }
 
 fn check_container_cli() -> Status {
@@ -296,6 +297,7 @@ fn build_auth_menu() -> Vec<MenuOption> {
                 println!("        Your token will be saved under ~/.claude and persist across sessions.");
                 Ok(())
             }),
+            header_before: None,
         },
         MenuOption {
             label: "Use an API key (ANTHROPIC_API_KEY)",
@@ -304,6 +306,7 @@ fn build_auth_menu() -> Vec<MenuOption> {
                 println!("\n            export {}=\"sk-...\"", ANTHROPIC_API_KEY);
                 prompt_and_add_env_var(ANTHROPIC_API_KEY)
             }),
+            header_before: None,
         },
         MenuOption {
             label: "Use a long-lived OAuth token (CLAUDE_CODE_OAUTH_TOKEN)",
@@ -314,6 +317,7 @@ fn build_auth_menu() -> Vec<MenuOption> {
                 println!("\n            export {}=\"your-token-here\"", CLAUDE_CODE_OAUTH_TOKEN);
                 prompt_and_add_env_var(CLAUDE_CODE_OAUTH_TOKEN)
             }),
+            header_before: None,
         },
         MenuOption {
             label: "Skip for now",
@@ -321,6 +325,7 @@ fn build_auth_menu() -> Vec<MenuOption> {
                 println!("\n        You can re-run `agentbox setup` at any time to set up authentication.");
                 Ok(())
             }),
+            header_before: None,
         },
     ]
 }
