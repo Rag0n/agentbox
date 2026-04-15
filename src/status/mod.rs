@@ -230,6 +230,22 @@ pub fn compute_cpu_pct(prev_usec: u64, curr_usec: u64, elapsed_usec: u64) -> Opt
     Some(delta / elapsed_usec as f64 * 100.0)
 }
 
+/// Returns `true` if the set of container ids differs between the two
+/// slices. Order-independent. Intended for cheaply detecting when the
+/// live loop should re-run `container ls --all --format json`.
+pub fn detect_container_set_change(prev: &[&str], curr: &[&str]) -> bool {
+    if prev.len() != curr.len() {
+        return true;
+    }
+    let prev_set: std::collections::HashSet<&str> = prev.iter().copied().collect();
+    for id in curr {
+        if !prev_set.contains(id) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Format a number of elapsed seconds as a compact uptime string.
 /// Returns "0m" for zero, sub-minute, or negative durations (clock skew).
 pub fn format_uptime(elapsed_secs: i64) -> String {
@@ -1187,6 +1203,41 @@ buildkit                     0.01%  1.50 GiB / 2.00 GiB    2.11 GiB / 7.49 MiB  
     fn test_compute_cpu_pct_no_work_done() {
         // No CPU used, non-zero elapsed = 0%
         assert_eq!(compute_cpu_pct(100, 100, 2_000_000), Some(0.0));
+    }
+
+    #[test]
+    fn test_detect_container_set_change_no_change() {
+        let a: Vec<&str> = vec!["x", "y"];
+        let b: Vec<&str> = vec!["y", "x"]; // order shouldn't matter
+        assert!(!detect_container_set_change(&a, &b));
+    }
+
+    #[test]
+    fn test_detect_container_set_change_container_added() {
+        let a: Vec<&str> = vec!["x"];
+        let b: Vec<&str> = vec!["x", "y"];
+        assert!(detect_container_set_change(&a, &b));
+    }
+
+    #[test]
+    fn test_detect_container_set_change_container_removed() {
+        let a: Vec<&str> = vec!["x", "y"];
+        let b: Vec<&str> = vec!["x"];
+        assert!(detect_container_set_change(&a, &b));
+    }
+
+    #[test]
+    fn test_detect_container_set_change_both_empty() {
+        let a: Vec<&str> = vec![];
+        let b: Vec<&str> = vec![];
+        assert!(!detect_container_set_change(&a, &b));
+    }
+
+    #[test]
+    fn test_detect_container_set_change_same_size_different_members() {
+        let a: Vec<&str> = vec!["x"];
+        let b: Vec<&str> = vec!["y"];
+        assert!(detect_container_set_change(&a, &b));
     }
 }
 
