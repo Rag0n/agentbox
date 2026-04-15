@@ -2,6 +2,7 @@
 //!
 //! See `wiki/2026-04-15-build-notifications-design.md` for rationale.
 
+use anyhow::Result;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
@@ -152,6 +153,68 @@ fn send_event(config: &crate::config::Config, event: Kind) -> io::Result<()> {
         None => return Ok(()),
     };
     send_with(&mut tty, kind, config, event, &project_name())
+}
+
+/// Decision core for `run_build`. Split out of `run_build` so the
+/// "fire failure on build error but NOT on save_cache error" rule has
+/// automated coverage — production code supplies closures that do the
+/// real work; tests supply closures that return controlled Ok/Err.
+fn run_build_inner(
+    ensure_base: impl FnOnce() -> Result<()>,
+    build: impl FnOnce() -> Result<()>,
+    save_cache: impl FnOnce() -> Result<()>,
+    on_failure: impl FnOnce(),
+) -> Result<()> {
+    let build_result: Result<()> = (|| {
+        ensure_base()?;
+        build()?;
+        Ok(())
+    })();
+
+    match build_result {
+        Err(e) => {
+            on_failure();
+            Err(e)
+        }
+        Ok(()) => {
+            // Build succeeded; save_cache failures are not "build failed".
+            save_cache()
+        }
+    }
+}
+
+/// Run the standard rebuild sequence (`ensure_base_image` + `build`, then
+/// `save_cache`). On a true build failure (either base-image prep or the
+/// main image build), fires `send_failure` before propagating the error.
+///
+/// `save_cache` is treated specially: it's filesystem bookkeeping that runs
+/// *after* the image is already built. If it fails (disk full, permissions,
+/// etc.) the image actually exists and built correctly; we propagate the
+/// error but do NOT fire `send_failure`, because "build failed" would be
+/// incorrect — the build succeeded, only the cache metadata didn't persist.
+/// The caller's `send_success` also won't fire, because the `?` propagation
+/// aborts before reaching it. Net effect on save_cache failure: no
+/// notification, error surfaces on stderr. (In practice this is rare; the
+/// cache file is tiny.)
+///
+/// Does not print any user-facing message — callers own pre-build output
+/// because different sites need different wording. Does not check
+/// `image::needs_build` — callers have already decided a build is required.
+pub fn run_build(
+    config: &crate::config::Config,
+    dockerfile: &str,
+    image_tag: &str,
+    cache_key: &str,
+    no_cache: bool,
+    pull: bool,
+    verbose: bool,
+) -> Result<()> {
+    run_build_inner(
+        || crate::image::ensure_base_image(dockerfile, no_cache, verbose),
+        || crate::image::build(image_tag, dockerfile, no_cache, pull, verbose),
+        || crate::image::save_cache(dockerfile, cache_key, &crate::image::cache_dir()),
+        || send_failure(config),
+    )
 }
 
 #[cfg(test)]
@@ -323,5 +386,62 @@ mod tests {
         send_with(&mut buf, OscKind::Osc777, &enabled_config(), Kind::Success, "my;project\nweird").unwrap();
         // Semicolon and newline stripped from body.
         assert_eq!(buf, b"\x1b]777;notify;agentbox: build complete;myprojectweird\x07");
+    }
+
+    use std::cell::Cell;
+
+    #[test]
+    fn test_run_build_inner_fires_failure_on_ensure_base_error() {
+        let fired = Cell::new(false);
+        let result = run_build_inner(
+            || Err(anyhow::anyhow!("ensure_base failed")),
+            || unreachable!("build should not run if ensure_base fails"),
+            || unreachable!("save_cache should not run if ensure_base fails"),
+            || fired.set(true),
+        );
+        assert!(result.is_err());
+        assert!(fired.get(), "ensure_base failure must fire send_failure");
+    }
+
+    #[test]
+    fn test_run_build_inner_fires_failure_on_build_error() {
+        let fired = Cell::new(false);
+        let result = run_build_inner(
+            || Ok(()),
+            || Err(anyhow::anyhow!("build failed")),
+            || unreachable!("save_cache should not run if build fails"),
+            || fired.set(true),
+        );
+        assert!(result.is_err());
+        assert!(fired.get(), "build failure must fire send_failure");
+    }
+
+    #[test]
+    fn test_run_build_inner_does_not_fire_failure_on_save_cache_error() {
+        // This is the important regression guard: save_cache runs after the
+        // image has already built successfully. A cache-persistence failure
+        // is NOT a "build failed" condition.
+        let fired = Cell::new(false);
+        let result = run_build_inner(
+            || Ok(()),
+            || Ok(()),
+            || Err(anyhow::anyhow!("save_cache failed")),
+            || fired.set(true),
+        );
+        assert!(result.is_err());
+        assert!(!fired.get(), "save_cache failure must NOT fire send_failure");
+    }
+
+    #[test]
+    fn test_run_build_inner_fires_nothing_on_full_success() {
+        let fired = Cell::new(false);
+        let result = run_build_inner(
+            || Ok(()),
+            || Ok(()),
+            || Ok(()),
+            || fired.set(true),
+        );
+        assert!(result.is_ok());
+        assert!(!fired.get(), "success path must not fire send_failure");
     }
 }
