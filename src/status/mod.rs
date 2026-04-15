@@ -312,6 +312,58 @@ pub fn shorten_path(path: &str, home: &Path, max_width: usize) -> String {
 const PROJECT_MAX_WIDTH: usize = 40;
 const HEADERS: [&str; 7] = ["NAME", "STATUS", "PROJECT", "CPU", "MEM", "UPTIME", "SESSIONS"];
 
+/// Per-column width tracker for live mode. CPU and MEM are seeded with
+/// representative-maximum values so jitter at the every-2s update rate
+/// is eliminated. NAME and PROJECT grow monotonically as new wider rows
+/// arrive (they never shrink — a long-named container stopping doesn't
+/// pull columns leftward).
+#[derive(Debug, Clone)]
+pub struct ColumnWidths {
+    pub name: usize,
+    pub status: usize,
+    pub project: usize,
+    pub cpu: usize,
+    pub mem: usize,
+    pub uptime: usize,
+    pub sessions: usize,
+}
+
+impl ColumnWidths {
+    /// Build a fresh `ColumnWidths` with seeded CPU/MEM floors and
+    /// every other column initialized to the header width floor.
+    pub fn seeded() -> Self {
+        Self {
+            name: "NAME".len(),
+            status: "STATUS".len(),
+            project: "PROJECT".len(),
+            cpu: "999.9%".len(),           // 6
+            mem: "99.9/99.9G".len(),       // 10
+            uptime: "UPTIME".len(),
+            sessions: "SESSIONS".len(),
+        }
+    }
+
+    /// Grow NAME and PROJECT widths based on the actual rows being
+    /// rendered. Never shrinks. Intended to be called after every
+    /// `ls` refresh in live mode. CPU/MEM/UPTIME/SESSIONS are not
+    /// updated here — CPU and MEM are floor-seeded in `seeded()`;
+    /// UPTIME is intentionally not tracked to avoid reserving space
+    /// for `99d 23h` on every frame (see design doc).
+    pub fn update(&mut self, rows: &[Row], home: &std::path::Path) {
+        for r in rows {
+            let n = r.name.chars().count();
+            if n > self.name {
+                self.name = n;
+            }
+            let p = shorten_path(&r.workdir, home, PROJECT_MAX_WIDTH);
+            let pw = p.chars().count();
+            if pw > self.project {
+                self.project = pw;
+            }
+        }
+    }
+}
+
 /// Render a row as 7 cells of strings.
 fn row_cells(row: &Row, home: &Path, now_unix: i64) -> [String; 7] {
     let project = shorten_path(&row.workdir, home, PROJECT_MAX_WIDTH);
@@ -609,6 +661,60 @@ mod tests {
             }
         }
     }]"#;
+
+    fn mk_row(name: &str, workdir: &str) -> Row {
+        Row {
+            name: name.to_string(),
+            state: State::Running,
+            workdir: workdir.to_string(),
+            started_unix: Some(0),
+            sessions: Some(0),
+            cpu_pct: None,
+            mem_used: None,
+            mem_total: None,
+        }
+    }
+
+    #[test]
+    fn test_column_widths_seeded_defaults() {
+        let w = ColumnWidths::seeded();
+        // CPU seed: "999.9%" = 6 chars
+        assert!(w.cpu >= 6);
+        // MEM seed: "99.9/99.9G" = 10 chars
+        assert!(w.mem >= 10);
+    }
+
+    #[test]
+    fn test_column_widths_update_grows_name_and_project() {
+        let home = std::path::PathBuf::from("/home/u");
+        let mut w = ColumnWidths::seeded();
+        let rows = vec![mk_row("agentbox-a-123456", "/home/u/short")];
+        w.update(&rows, &home);
+        assert_eq!(w.name, "agentbox-a-123456".len());
+
+        let longer = vec![mk_row("agentbox-aaaaaaaaaaaaa-123456", "/home/u/short")];
+        w.update(&longer, &home);
+        assert_eq!(w.name, "agentbox-aaaaaaaaaaaaa-123456".len());
+    }
+
+    #[test]
+    fn test_column_widths_never_shrink_name() {
+        let home = std::path::PathBuf::from("/home/u");
+        let mut w = ColumnWidths::seeded();
+        w.update(&[mk_row("agentbox-longname-111111", "/home/u/p")], &home);
+        let before = w.name;
+
+        // Now a shorter row arrives — width must not shrink.
+        w.update(&[mk_row("ab-x-1", "/home/u/p")], &home);
+        assert_eq!(w.name, before);
+    }
+
+    #[test]
+    fn test_column_widths_cpu_is_floor_not_clamp() {
+        let w = ColumnWidths::seeded();
+        assert_eq!(w.cpu, 6);
+        assert_eq!(w.mem, 10);
+    }
 
     #[test]
     fn test_parse_ls_json_malformed_returns_err() {
