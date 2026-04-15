@@ -171,6 +171,23 @@ flags = ["--dangerously-bypass-approvals-and-sandbox"]
 # [bridge]
 # allowed_commands = ["xcodebuild", "xcrun", "adb", "emulator"]
 # forward_not_found = false
+
+# Terminal notifications after long-running image rebuilds.
+#
+# When agentbox rebuilds the container image (because the Dockerfile changed,
+# or on first run), the build can take minutes. If you tab away during that
+# wait, a completion notification lets you know when the build has finished
+# — whether it succeeded (so you can come back and use the session, run the
+# task, or see the build output) or failed (so you don't wait for nothing).
+#
+# Notifications ONLY fire for image rebuilds — not for normal session starts
+# where the cached image is reused, and not for the coding agent's own
+# prompts (those are covered by agent-specific plugins like agent-notifications).
+#
+# Sent via OSC escape sequences. Supported terminals: Ghostty, WezTerm,
+# iTerm2, Kitty. Other terminals silently skip (no visible garbage).
+[notifications]
+enabled = true
 "#
     }
 }
@@ -304,6 +321,12 @@ mod tests {
         // default_agent stays commented out so setup prompts on fresh install
         assert!(content.contains("# default_agent ="));
         assert!(!content.lines().any(|l| l.trim_start().starts_with("default_agent =")));
+        // notifications section
+        assert!(content.contains("[notifications]"));
+        assert!(content.contains("enabled = true"));
+        assert!(content.contains("Terminal notifications after long-running image rebuilds"));
+        // enabled line must be active (not commented) so disabling requires an explicit edit
+        assert!(content.lines().any(|l| l.trim_start().starts_with("enabled = true")));
     }
 
     #[test]
