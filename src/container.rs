@@ -25,7 +25,8 @@ pub fn container_name(path: &str) -> String {
 
 #[derive(Debug, Clone)]
 pub enum RunMode {
-    Claude {
+    Agent {
+        agent: crate::agent::CodingAgent,
         task: Option<String>,
         cli_flags: Vec<String>,
     },
@@ -35,10 +36,9 @@ pub enum RunMode {
 }
 
 impl RunMode {
-    /// Whether this mode should attach a TTY (interactive) or run non-interactively.
     pub fn is_interactive(&self) -> bool {
         match self {
-            RunMode::Claude { task, .. } => task.is_none(),
+            RunMode::Agent { task, .. } => task.is_none(),
             RunMode::Shell { cmd } => cmd.is_empty(),
         }
     }
@@ -82,13 +82,9 @@ impl RunOpts {
         args.push(self.image.clone());
 
         match &self.mode {
-            RunMode::Claude { task, cli_flags } => {
-                for flag in cli_flags {
-                    args.push(flag.clone());
-                }
-                if let Some(t) = task {
-                    args.extend(["-p".into(), t.clone()]);
-                }
+            RunMode::Agent { agent, task, cli_flags } => {
+                args.push(agent.entrypoint_arg().to_string());
+                args.extend(agent.invocation(cli_flags, task.as_deref()));
             }
             RunMode::Shell { cmd } => {
                 args.push("--shell".into());
@@ -287,14 +283,12 @@ fn build_exec_args(name: &str, mode: &RunMode, env_vars: &[(String, String)]) ->
     let setup = build_setup_prefix(env_vars);
 
     match mode {
-        RunMode::Claude { task, cli_flags } => {
+        RunMode::Agent { agent, task, cli_flags } => {
             let mut cmd = setup;
-            cmd.push_str("claude --dangerously-skip-permissions");
-            for flag in cli_flags {
-                cmd.push_str(&format!(" '{}'", flag.replace('\'', "'\\''")));
-            }
-            if let Some(t) = task {
-                cmd.push_str(&format!(" -p '{}'", t.replace('\'', "'\\''")));
+            cmd.push_str("exec ");
+            cmd.push_str(agent.binary());
+            for tok in agent.invocation(cli_flags, task.as_deref()) {
+                cmd.push_str(&format!(" '{}'", tok.replace('\'', "'\\''")));
             }
             args.push(cmd);
         }
@@ -407,6 +401,7 @@ pub fn list_names(verbose: bool) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::CodingAgent;
 
     #[test]
     fn test_container_name_from_path() {
@@ -439,7 +434,7 @@ mod tests {
             memory: "8G".into(),
             env_vars: vec![("GH_TOKEN".into(), "tok123".into())],
             volumes: vec!["/Users/alex/Dev/myapp:/Users/alex/Dev/myapp".into()],
-            mode: RunMode::Claude { task: None, cli_flags: vec![] },
+            mode: RunMode::Agent { agent: CodingAgent::Claude, task: None, cli_flags: vec![] },
         };
         let args = opts.to_run_args();
         assert!(args.contains(&"--name".to_string()));
@@ -521,7 +516,8 @@ mod tests {
             ("GH_TOKEN".to_string(), "tok123".to_string()),
             ("TERM".to_string(), "xterm".to_string()),
         ];
-        let mode = RunMode::Claude {
+        let mode = RunMode::Agent {
+            agent: CodingAgent::Claude,
             task: Some("fix tests".into()),
             cli_flags: vec![],
         };
@@ -533,19 +529,21 @@ mod tests {
         // Task passed inside bash -lc command string
         assert!(args.contains(&"bash".to_string()));
         let cmd = args.last().unwrap();
-        assert!(cmd.contains("claude --dangerously-skip-permissions"));
-        assert!(cmd.contains("-p 'fix tests'"));
+        // After the refactor, all tokens are uniformly single-quoted
+        assert!(cmd.contains("exec claude"));
+        assert!(cmd.contains("'-p'"));
+        assert!(cmd.contains("'fix tests'"));
     }
 
     #[test]
     fn test_exec_args_interactive_no_task() {
-        let mode = RunMode::Claude { task: None, cli_flags: vec![] };
+        let mode = RunMode::Agent { agent: CodingAgent::Claude, task: None, cli_flags: vec![] };
         let args = build_exec_args("mycontainer", &mode, &[]);
         assert!(args.contains(&"--interactive".to_string()));
         assert!(args.contains(&"--tty".to_string()));
         // No -p flag in command string when no task
         let cmd = args.last().unwrap();
-        assert_eq!(cmd, "claude --dangerously-skip-permissions");
+        assert_eq!(cmd, "exec claude");
     }
 
     #[test]
@@ -556,12 +554,12 @@ mod tests {
             ("HOSTEXEC_TOKEN".to_string(), "tok".to_string()),
             ("HOSTEXEC_COMMANDS".to_string(), "xcodebuild xcrun".to_string()),
         ];
-        let mode = RunMode::Claude { task: None, cli_flags: vec![] };
+        let mode = RunMode::Agent { agent: CodingAgent::Claude, task: None, cli_flags: vec![] };
         let args = build_exec_args("mycontainer", &mode, &env_vars);
         let cmd = args.last().unwrap();
         assert!(cmd.contains("HOSTEXEC_COMMANDS"), "should set up symlinks");
         assert!(cmd.contains("ln -sf /usr/local/bin/hostexec"));
-        assert!(cmd.contains("claude --dangerously-skip-permissions"));
+        assert!(cmd.contains("exec claude"));
     }
 
     #[test]
@@ -573,7 +571,7 @@ mod tests {
                 "true".to_string(),
             ),
         ];
-        let mode = RunMode::Claude { task: None, cli_flags: vec![] };
+        let mode = RunMode::Agent { agent: CodingAgent::Claude, task: None, cli_flags: vec![] };
         let args = build_exec_args("mycontainer", &mode, &env_vars);
         let cmd = args.last().unwrap();
         assert!(cmd.contains("command_not_found_handle"));
@@ -581,11 +579,11 @@ mod tests {
 
     #[test]
     fn test_exec_args_no_hostexec_without_env() {
-        let mode = RunMode::Claude { task: None, cli_flags: vec![] };
+        let mode = RunMode::Agent { agent: CodingAgent::Claude, task: None, cli_flags: vec![] };
         let args = build_exec_args("mycontainer", &mode, &[]);
         let cmd = args.last().unwrap();
         assert!(!cmd.contains("HOSTEXEC"), "no bridge setup without env vars");
-        assert_eq!(cmd, "claude --dangerously-skip-permissions");
+        assert_eq!(cmd, "exec claude");
     }
 
     #[test]
@@ -669,13 +667,14 @@ mod tests {
             "--model".to_string(),
             "sonnet".to_string(),
         ];
-        let mode = RunMode::Claude {
+        let mode = RunMode::Agent {
+            agent: CodingAgent::Claude,
             task: None,
             cli_flags: cli_flags.clone(),
         };
         let args = build_exec_args("mycontainer", &mode, &[]);
         let cmd = args.last().unwrap();
-        assert!(cmd.contains("claude --dangerously-skip-permissions"));
+        assert!(cmd.contains("exec claude"));
         assert!(cmd.contains("'--append-system-prompt' 'Be careful.'"));
         assert!(cmd.contains("'--model' 'sonnet'"));
     }
@@ -683,26 +682,25 @@ mod tests {
     #[test]
     fn test_exec_args_cli_flags_before_task() {
         let cli_flags = vec!["--model".to_string(), "sonnet".to_string()];
-        let mode = RunMode::Claude {
+        let mode = RunMode::Agent {
+            agent: CodingAgent::Claude,
             task: Some("fix tests".into()),
             cli_flags: cli_flags.clone(),
         };
         let args = build_exec_args("mycontainer", &mode, &[]);
         let cmd = args.last().unwrap();
-        // Flags should appear between --dangerously-skip-permissions and -p
-        let dsp_pos = cmd.find("--dangerously-skip-permissions").unwrap();
+        // Flags should appear before -p (task marker)
         let model_pos = cmd.find("'--model'").unwrap();
-        let task_pos = cmd.find("-p '").unwrap();
-        assert!(dsp_pos < model_pos);
+        let task_pos = cmd.find("'-p'").unwrap();
         assert!(model_pos < task_pos);
     }
 
     #[test]
     fn test_exec_args_cli_flags_empty() {
-        let mode = RunMode::Claude { task: None, cli_flags: vec![] };
+        let mode = RunMode::Agent { agent: CodingAgent::Claude, task: None, cli_flags: vec![] };
         let args = build_exec_args("mycontainer", &mode, &[]);
         let cmd = args.last().unwrap();
-        assert_eq!(cmd, "claude --dangerously-skip-permissions");
+        assert_eq!(cmd, "exec claude");
     }
 
     #[test]
@@ -711,7 +709,8 @@ mod tests {
             "--append-system-prompt".to_string(),
             "Don't break things".to_string(),
         ];
-        let mode = RunMode::Claude {
+        let mode = RunMode::Agent {
+            agent: CodingAgent::Claude,
             task: None,
             cli_flags: cli_flags.clone(),
         };
@@ -731,7 +730,7 @@ mod tests {
             memory: "4G".into(),
             env_vars: vec![],
             volumes: vec![],
-            mode: RunMode::Claude { task: Some("fix tests".into()), cli_flags: vec!["--model".into(), "sonnet".into()] },
+            mode: RunMode::Agent { agent: CodingAgent::Claude, task: Some("fix tests".into()), cli_flags: vec!["--model".into(), "sonnet".into()] },
         };
         let args = opts.to_run_args();
         let image_pos = args.iter().position(|a| a == "agentbox:default").unwrap();
@@ -752,11 +751,11 @@ mod tests {
             memory: "4G".into(),
             env_vars: vec![],
             volumes: vec![],
-            mode: RunMode::Claude { task: None, cli_flags: vec![] },
+            mode: RunMode::Agent { agent: CodingAgent::Claude, task: None, cli_flags: vec![] },
         };
         let args = opts.to_run_args();
-        // Last arg should be the image since no task and no cli_flags
-        assert_eq!(args.last().unwrap(), "agentbox:default");
+        // Last arg should be --claude (entrypoint_arg) since no task and no cli_flags
+        assert_eq!(args.last().unwrap(), "--claude");
     }
 
     #[test]
@@ -769,7 +768,7 @@ mod tests {
             memory: "4G".into(),
             env_vars: vec![],
             volumes: vec![],
-            mode: RunMode::Claude { task: Some("fix the tests".into()), cli_flags: vec![] },
+            mode: RunMode::Agent { agent: CodingAgent::Claude, task: Some("fix the tests".into()), cli_flags: vec![] },
         };
         let args = opts.to_run_args();
         assert!(!args.contains(&"--interactive".to_string()));
@@ -831,8 +830,8 @@ mod tests {
 
     #[test]
     fn test_run_mode_is_interactive() {
-        assert!(RunMode::Claude { task: None, cli_flags: vec![] }.is_interactive());
-        assert!(!RunMode::Claude { task: Some("t".into()), cli_flags: vec![] }.is_interactive());
+        assert!(RunMode::Agent { agent: CodingAgent::Claude, task: None, cli_flags: vec![] }.is_interactive());
+        assert!(!RunMode::Agent { agent: CodingAgent::Claude, task: Some("t".into()), cli_flags: vec![] }.is_interactive());
         assert!(RunMode::Shell { cmd: vec![] }.is_interactive());
         assert!(!RunMode::Shell { cmd: vec!["ls".into()] }.is_interactive());
     }
@@ -895,6 +894,127 @@ mod tests {
         let setup_pos = script.find("ln -sf").unwrap();
         let bash_pos = script.find("exec bash").unwrap();
         assert!(setup_pos < bash_pos);
+    }
+
+    #[test]
+    fn test_run_args_agent_codex_interactive_no_task() {
+        let opts = RunOpts {
+            name: "agentbox-app-abc123".into(),
+            image: "agentbox:default".into(),
+            workdir: "/Users/alex/Dev/app".into(),
+            cpus: 4,
+            memory: "8G".into(),
+            env_vars: vec![],
+            volumes: vec![],
+            mode: RunMode::Agent {
+                agent: CodingAgent::Codex,
+                task: None,
+                cli_flags: vec!["--dangerously-bypass-approvals-and-sandbox".into()],
+            },
+        };
+        let args = opts.to_run_args();
+        let image_idx = args.iter().position(|a| a == "agentbox:default").unwrap();
+        // After the image: --codex, then flags. No "exec".
+        assert_eq!(args[image_idx + 1], "--codex");
+        assert_eq!(args[image_idx + 2], "--dangerously-bypass-approvals-and-sandbox");
+        assert!(!args[image_idx + 1..].contains(&"exec".to_string()));
+        assert!(args.contains(&"--interactive".to_string()));
+        assert!(args.contains(&"--tty".to_string()));
+    }
+
+    #[test]
+    fn test_run_args_agent_codex_headless_puts_exec_before_flags() {
+        let opts = RunOpts {
+            name: "agentbox-app-abc123".into(),
+            image: "agentbox:default".into(),
+            workdir: "/Users/alex/Dev/app".into(),
+            cpus: 4,
+            memory: "8G".into(),
+            env_vars: vec![],
+            volumes: vec![],
+            mode: RunMode::Agent {
+                agent: CodingAgent::Codex,
+                task: Some("fix tests".into()),
+                cli_flags: vec!["--dangerously-bypass-approvals-and-sandbox".into()],
+            },
+        };
+        let args = opts.to_run_args();
+        let image_idx = args.iter().position(|a| a == "agentbox:default").unwrap();
+        assert_eq!(args[image_idx + 1], "--codex");
+        assert_eq!(args[image_idx + 2], "exec");
+        assert_eq!(
+            args[image_idx + 3],
+            "--dangerously-bypass-approvals-and-sandbox"
+        );
+        assert_eq!(args[image_idx + 4], "fix tests");
+        // Headless: no TTY
+        assert!(!args.contains(&"--tty".to_string()));
+    }
+
+    #[test]
+    fn test_run_args_agent_claude_headless_preserves_legacy_ordering() {
+        let opts = RunOpts {
+            name: "agentbox-app-abc123".into(),
+            image: "agentbox:default".into(),
+            workdir: "/Users/alex/Dev/app".into(),
+            cpus: 4,
+            memory: "8G".into(),
+            env_vars: vec![],
+            volumes: vec![],
+            mode: RunMode::Agent {
+                agent: CodingAgent::Claude,
+                task: Some("fix tests".into()),
+                cli_flags: vec!["--dangerously-skip-permissions".into()],
+            },
+        };
+        let args = opts.to_run_args();
+        let image_idx = args.iter().position(|a| a == "agentbox:default").unwrap();
+        assert_eq!(args[image_idx + 1], "--claude");
+        assert_eq!(args[image_idx + 2], "--dangerously-skip-permissions");
+        assert_eq!(args[image_idx + 3], "-p");
+        assert_eq!(args[image_idx + 4], "fix tests");
+    }
+
+    #[test]
+    fn test_exec_args_agent_codex_headless() {
+        let env_vars: Vec<(String, String)> = vec![];
+        let mode = RunMode::Agent {
+            agent: CodingAgent::Codex,
+            task: Some("fix tests".into()),
+            cli_flags: vec!["--dangerously-bypass-approvals-and-sandbox".into()],
+        };
+        let args = build_exec_args("mycontainer", &mode, &env_vars);
+        let cmd = args.last().unwrap();
+        assert!(cmd.contains("codex"));
+        // `exec` subcommand must come BEFORE flags
+        let exec_pos = cmd.find("'exec'").expect("expected 'exec' token in bash cmd");
+        let flag_pos = cmd
+            .find("'--dangerously-bypass-approvals-and-sandbox'")
+            .expect("expected bypass flag");
+        assert!(
+            exec_pos < flag_pos,
+            "exec should precede flags in codex headless; got: {cmd}"
+        );
+        assert!(cmd.contains("'fix tests'"));
+        // Must NOT contain '-p' token (that's claude's headless syntax).
+        // The quoted form matches how real argv tokens appear in the payload.
+        assert!(!cmd.contains("'-p'"));
+    }
+
+    #[test]
+    fn test_exec_args_agent_codex_interactive() {
+        let env_vars: Vec<(String, String)> = vec![];
+        let mode = RunMode::Agent {
+            agent: CodingAgent::Codex,
+            task: None,
+            cli_flags: vec![],
+        };
+        let args = build_exec_args("mycontainer", &mode, &env_vars);
+        let cmd = args.last().unwrap();
+        assert!(cmd.contains("codex"));
+        assert!(!cmd.contains("'exec'"));
+        assert!(args.contains(&"--interactive".to_string()));
+        assert!(args.contains(&"--tty".to_string()));
     }
 
     #[test]

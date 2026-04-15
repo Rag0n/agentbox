@@ -498,7 +498,8 @@ fn main() -> Result<()> {
             let mut cli_flags: Vec<String> = config.cli_flags("claude").to_vec();
             cli_flags.extend(passthrough_flags);
 
-            let mode = container::RunMode::Claude {
+            let mode = container::RunMode::Agent {
+                agent: agent::CodingAgent::Claude,
                 task: task_str,
                 cli_flags,
             };
