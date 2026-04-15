@@ -2,7 +2,7 @@
 
 Run AI coding agents in isolated Apple Containers. Your project directory is mounted read/write — everything else on your filesystem is inaccessible.
 
-Currently supports Claude Code. More agents planned.
+Supported agents: Claude Code, OpenAI Codex.
 
 ## Requirements
 
@@ -22,6 +22,14 @@ curl -fsSL https://github.com/Rag0n/agentbox/releases/latest/download/agentbox-d
 mv agentbox ~/.local/bin/
 ```
 
+### Breaking change (pre-1.0)
+
+agentbox no longer hardcodes `--dangerously-skip-permissions` into the claude invocation. The flag now lives in `[cli.claude] flags` in the config template.
+
+- If your `~/.config/agentbox/config.toml` has a `[cli.claude] flags = [...]` entry, add `--dangerously-skip-permissions` to the list.
+- If your config has no `[cli.claude]` section, add one with `flags = ["--dangerously-skip-permissions"]`.
+- If you have no `~/.config/agentbox/config.toml`, run `agentbox setup` — it will create the file with correct defaults.
+
 ## Quick Start
 
 ```bash
@@ -30,11 +38,16 @@ agentbox setup
 
 # Then use agentbox normally:
 
-# Start interactive Claude session in current project
+# Start interactive Claude session (default, unless default_agent is set in config)
 agentbox
 
-# Run a task headlessly
+# Explicit agent subcommands
+agentbox claude
+agentbox codex
+
+# Headless tasks
 agentbox "fix the failing tests"
+agentbox codex "fix the failing tests"
 
 # Open an interactive bash shell in the container (no Claude)
 agentbox shell
@@ -70,6 +83,9 @@ agentbox -- --model sonnet
 
 # Append to system prompt for a headless task
 agentbox "fix the tests" -- --append-system-prompt "Be concise."
+
+# Pass a codex config override (reasoning effort)
+agentbox codex -- -c model_reasoning_effort=high
 ```
 
 For flags you want every time, set them in config instead of repeating on every invocation:
@@ -78,6 +94,14 @@ For flags you want every time, set them in config instead of repeating on every 
 # ~/.config/agentbox/config.toml
 [cli.claude]
 flags = ["--append-system-prompt", "Be brutally honest."]
+```
+
+For codex, use a `[cli.codex]` section the same way:
+
+```toml
+# Pass flags to codex via config
+# [cli.codex]
+# flags = ["--dangerously-bypass-approvals-and-sandbox", "-c", "model_reasoning_effort=medium"]
 ```
 
 Config flags and `--` flags are merged. Config flags come first, `--` flags after.
@@ -89,6 +113,11 @@ Optional. Create with `agentbox config init`.
 Located at `~/.config/agentbox/config.toml`:
 
 ```toml
+# ~/.config/agentbox/config.toml
+
+# Default agent for bare `agentbox`. Omit for "claude".
+default_agent = "claude"   # or "codex"
+
 # Resources
 cpus = 4          # default: half of host cores
 memory = "8G"     # default: 8G
@@ -98,20 +127,23 @@ dockerfile = "/path/to/my.Dockerfile"
 
 # Additional volumes to mount into containers
 volumes = [
-  "~/.config/worktrunk",              # tilde = home-relative mapping
-  "/opt/shared-libs",                  # absolute = same path in container
-  "/source/path:/dest/path",          # explicit source:dest mapping
+  "~/.config/worktrunk",
+  "/opt/shared-libs",
+  "/source/path:/dest/path",
 ]
 
 # Environment variables passed into container
 [env]
-CLAUDE_CODE_OAUTH_TOKEN = ""  # empty = inherit from host
-GH_TOKEN = ""                 # empty = inherit from host
-MY_API_KEY = "abc123"         # literal value
+CLAUDE_CODE_OAUTH_TOKEN = ""
+GH_TOKEN = ""
+MY_API_KEY = "abc123"
 
-# Extra CLI flags passed to the coding agent
+# Default flags for each agent. Replace to override.
 [cli.claude]
-flags = ["--append-system-prompt", "Be brutally honest."]
+flags = ["--dangerously-skip-permissions"]
+
+[cli.codex]
+flags = ["--dangerously-bypass-approvals-and-sandbox"]
 
 # Named profiles
 [profiles.mystack]
@@ -148,6 +180,8 @@ agentbox --profile mystack
 ```
 
 ## Authentication
+
+### Claude Code
 
 macOS Keychain isn't accessible from inside the Linux container, so Claude Code needs credentials passed via environment variables, or a one-time login from inside the container (which persists under `~/.claude/`).
 
@@ -189,14 +223,32 @@ ANTHROPIC_API_KEY = ""  # empty = inherit from host env
 
 Your `~/.claude` settings directory is mounted into the container, so project settings, CLAUDE.md trust, and preferences carry over automatically. Only the secret token needs to be passed explicitly.
 
+### OpenAI Codex
+
+Codex stores auth under `~/.codex/auth.json`, which agentbox mounts into the container read/write. Sign in once (host or container); the credentials persist for both.
+
+**First sign-in.** Run `agentbox codex`. On an unauthenticated container, codex's onboarding menu appears; pick the device-code sign-in flow (intended for remote/headless machines), then open the URL on your Mac and enter the code shown in the terminal. Auth persists automatically via the `~/.codex` mount. If the onboarding menu only shows ChatGPT / API-key options up front, pick ChatGPT and press Esc on the browser screen — codex falls back to device code for headless environments.
+
+**Credential storage — default case.** Codex stores credentials in `~/.codex/auth.json` by default (file-based). You don't need to configure anything; the mount makes the file reachable from both host and container.
+
+**Credential storage — if you've customized it.** If you previously set `cli_auth_credentials_store = "keyring"` (or `"auto"`, `"ephemeral"`) in `~/.codex/config.toml`, auth won't propagate into the container — the Linux container can't reach the macOS Keychain. Switch the setting back to `"file"` and re-login:
+
+```toml
+# ~/.codex/config.toml
+cli_auth_credentials_store = "file"
+```
+
+`agentbox setup` detects this case and prints the same hint.
+
 ## What's Mounted
 
-| Host | Container | Access |
-|------|-----------|--------|
-| Current directory | Same path | read/write |
-| `~/.claude` | `/home/user/.claude` | read/write |
-| `~/.claude.json` | `/home/user/.claude.json` | read/write |
-| Additional volumes | Configured path | read/write |
+| Host                | Container                 | Access     | Notes                                                         |
+|---------------------|---------------------------|------------|---------------------------------------------------------------|
+| Current directory   | Same path                 | read/write |                                                               |
+| `~/.claude`         | `/home/user/.claude`      | read/write |                                                               |
+| `~/.claude.json`    | `/tmp/claude-seed.json`   | read-only  | Seed only; `entrypoint.sh` `jq`-merges into `~/.claude.json` |
+| `~/.codex`          | `/home/user/.codex`       | read/write |                                                               |
+| Additional volumes  | Configured path           | read/write |                                                               |
 
 Additional volumes can be mounted via [config](#configuration) or CLI:
 
