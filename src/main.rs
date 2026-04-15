@@ -527,11 +527,18 @@ fn main() -> Result<()> {
             let (dockerfile_content, image_tag) =
                 image::resolve_dockerfile(&cwd, cli.profile.as_deref(), &config)?;
             let cache_key = image_tag.replace(':', "-");
-            image::ensure_base_image(&dockerfile_content, no_cache, cli.verbose)?;
             eprintln!("Building {}...", image_tag);
-            image::build(&image_tag, &dockerfile_content, no_cache, true, cli.verbose)?;
-            image::save_cache(&dockerfile_content, &cache_key, &image::cache_dir())?;
+            notify::run_build(
+                &config,
+                &dockerfile_content,
+                &image_tag,
+                &cache_key,
+                no_cache,
+                true,
+                cli.verbose,
+            )?;
             println!("Built {}", image_tag);
+            notify::send_success(&config);
             Ok(())
         }
         Some(Commands::Config { command }) => match command {
