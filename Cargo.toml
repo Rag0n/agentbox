@@ -20,6 +20,7 @@ tokio-tungstenite = "0.24"
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 rand = "0.8"
 libc = "0.2"
+crossterm = { version = "0.28", features = ["event-stream"] }
 toml_edit = "0.22"
 
 [dev-dependencies]
