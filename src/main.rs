@@ -359,12 +359,25 @@ fn run_session(
             let (dockerfile_content, image_tag) =
                 image::resolve_dockerfile(&cwd, cli.profile.as_deref(), config)?;
             let cache_key = image_tag.replace(':', "-");
-            if image::needs_build(&dockerfile_content, &cache_key, &image::cache_dir()) {
+            let did_build = if image::needs_build(&dockerfile_content, &cache_key, &image::cache_dir()) {
                 eprintln!("Image changed, recreating container...");
                 container::rm(&name, cli.verbose)?;
-                image::ensure_base_image(&dockerfile_content, false, cli.verbose)?;
-                image::build(&image_tag, &dockerfile_content, false, false, cli.verbose)?;
-                image::save_cache(&dockerfile_content, &cache_key, &image::cache_dir())?;
+                notify::run_build(
+                    config,
+                    &dockerfile_content,
+                    &image_tag,
+                    &cache_key,
+                    false,
+                    false,
+                    cli.verbose,
+                )?;
+                true
+            } else {
+                false
+            };
+
+            if did_build {
+                notify::send_success(config);
                 create_and_run(
                     &name,
                     &image_tag,
