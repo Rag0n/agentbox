@@ -154,6 +154,52 @@ fn ensure_env_var_in_config(path: &Path, key: &str) -> Result<()> {
     Ok(())
 }
 
+/// Idempotently set `default_agent` in the config file. If a commented
+/// `# default_agent = ...` line exists, it is replaced. If an uncommented
+/// line exists, its value is overwritten. Otherwise the key is inserted at
+/// the top.
+fn ensure_default_agent_in_config(path: &Path, agent: crate::agent::CodingAgent) -> Result<()> {
+    let content = std::fs::read_to_string(path)?;
+    let value = agent.config_key();
+    let new_line = format!("default_agent = \"{}\"", value);
+
+    // Prefer surgical line-level edits because the key may live outside any
+    // table, which toml_edit handles awkwardly at the document root.
+    let mut lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+    let mut replaced = false;
+
+    for line in &mut lines {
+        let trimmed = line.trim_start();
+        let commented =
+            trimmed.starts_with('#') && trimmed.trim_start_matches('#').trim_start().starts_with("default_agent");
+        let live = trimmed.starts_with("default_agent");
+        if commented || live {
+            *line = new_line.clone();
+            replaced = true;
+            break;
+        }
+    }
+
+    if !replaced {
+        // Insert at the top after any leading comment block but before tables.
+        let insert_at = lines
+            .iter()
+            .position(|l| l.trim_start().starts_with('['))
+            .unwrap_or(lines.len());
+        lines.insert(insert_at, new_line);
+        if insert_at == 0 || lines.get(insert_at - 1).map_or(false, |l| !l.is_empty()) {
+            lines.insert(insert_at + 1, String::new());
+        }
+    }
+
+    let mut output = lines.join("\n");
+    if !output.ends_with('\n') {
+        output.push('\n');
+    }
+    std::fs::write(path, output)?;
+    Ok(())
+}
+
 const AUTH_EXPLANATION: &str = "macOS Keychain isn't reachable from the Linux container, so
 Claude Code needs credentials via env var, or a one-time login
 from inside the container (the token persists under ~/.claude).";
@@ -438,5 +484,59 @@ mod tests {
 
         let err = ensure_env_var_in_config(&path, "MY_KEY").unwrap_err();
         assert!(err.to_string().contains("not a table"));
+    }
+
+    #[test]
+    fn test_ensure_default_agent_writes_new_key() {
+        use crate::agent::CodingAgent;
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "# existing comment\nmemory = \"4G\"\n").unwrap();
+
+        ensure_default_agent_in_config(&path, CodingAgent::Codex).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("default_agent = \"codex\""));
+        assert!(content.contains("memory = \"4G\""));
+        assert!(content.contains("# existing comment"));
+    }
+
+    #[test]
+    fn test_ensure_default_agent_uncomments_existing_key() {
+        use crate::agent::CodingAgent;
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "# header\n# default_agent = \"claude\"\n[cli.claude]\nflags = []\n",
+        )
+        .unwrap();
+
+        ensure_default_agent_in_config(&path, CodingAgent::Codex).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("default_agent = \"codex\""));
+        // Commented-out version no longer present (replaced, not duplicated)
+        let live_lines = content
+            .lines()
+            .filter(|l| l.trim_start().starts_with("default_agent"))
+            .count();
+        assert_eq!(live_lines, 1);
+        // Other content preserved
+        assert!(content.contains("[cli.claude]"));
+    }
+
+    #[test]
+    fn test_ensure_default_agent_overwrites_existing_uncommented_value() {
+        use crate::agent::CodingAgent;
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "default_agent = \"claude\"\n").unwrap();
+
+        ensure_default_agent_in_config(&path, CodingAgent::Codex).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("default_agent = \"codex\""));
+        assert!(!content.contains("default_agent = \"claude\""));
     }
 }
