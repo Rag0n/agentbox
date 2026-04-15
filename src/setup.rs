@@ -266,9 +266,9 @@ fn check_default_agent() -> Status {
     }
 }
 
-const AUTH_EXPLANATION: &str = "macOS Keychain isn't reachable from the Linux container, so
-Claude Code needs credentials via env var, or a one-time login
-from inside the container (the token persists under ~/.claude).";
+const AUTH_EXPLANATION: &str = "macOS Keychain isn't reachable from the Linux container.\n\
+Claude Code needs either a one-time login from inside the container\n\
+(Pro/Max subscribers; persists under ~/.claude) or credentials via env var.";
 
 /// Prompt user for `[Y/n]` confirmation, then add `key = ""` under `[env]` in
 /// the config file. Used by both the API-key and OAuth-token menu branches.
@@ -291,22 +291,13 @@ fn prompt_and_add_env_var(key: &str) -> Result<()> {
 fn build_auth_menu() -> Vec<MenuOption> {
     vec![
         MenuOption {
-            label: "Log in interactively inside the container (recommended for Pro/Max)",
+            label: "Log in once inside the container (Pro/Max subscription)",
             action: Box::new(|| {
-                println!("\n        Next step: run `agentbox`, then inside Claude type `/login`.");
-                println!("        Your token will be saved under ~/.claude and persist across sessions.");
+                println!("\n        Next step: run `agentbox`, then type `/login` inside Claude.");
+                println!("        The credentials persist under ~/.claude — you only do this once.");
                 Ok(())
             }),
-            header_before: None,
-        },
-        MenuOption {
-            label: "Use an API key (ANTHROPIC_API_KEY)",
-            action: Box::new(|| {
-                println!("\n        Run this in your shell (and add it to ~/.zshrc / ~/.bashrc for next time):");
-                println!("\n            export {}=\"sk-...\"", ANTHROPIC_API_KEY);
-                prompt_and_add_env_var(ANTHROPIC_API_KEY)
-            }),
-            header_before: None,
+            header_before: Some("Recommended:"),
         },
         MenuOption {
             label: "Use a long-lived OAuth token (CLAUDE_CODE_OAUTH_TOKEN)",
@@ -316,6 +307,15 @@ fn build_auth_menu() -> Vec<MenuOption> {
                 println!("\n        Copy the token, then run in your shell (and add it to ~/.zshrc / ~/.bashrc):");
                 println!("\n            export {}=\"your-token-here\"", CLAUDE_CODE_OAUTH_TOKEN);
                 prompt_and_add_env_var(CLAUDE_CODE_OAUTH_TOKEN)
+            }),
+            header_before: Some("Alternatives:"),
+        },
+        MenuOption {
+            label: "Use an API key (ANTHROPIC_API_KEY)",
+            action: Box::new(|| {
+                println!("\n        Run this in your shell (and add it to ~/.zshrc / ~/.bashrc for next time):");
+                println!("\n            export {}=\"sk-...\"", ANTHROPIC_API_KEY);
+                prompt_and_add_env_var(ANTHROPIC_API_KEY)
             }),
             header_before: None,
         },
@@ -1093,5 +1093,45 @@ mod tests {
 
         let expected = "\n          Recommended:\n            1) First\n\n          Alternatives:\n            2) Second\n            3) Third\n";
         assert_eq!(rendered, expected);
+    }
+
+    #[test]
+    fn test_build_auth_menu_structure() {
+        let menu = build_auth_menu();
+        assert_eq!(menu.len(), 4);
+        assert_eq!(
+            menu[0].label,
+            "Log in once inside the container (Pro/Max subscription)"
+        );
+        assert_eq!(menu[0].header_before, Some("Recommended:"));
+        assert_eq!(
+            menu[1].label,
+            "Use a long-lived OAuth token (CLAUDE_CODE_OAUTH_TOKEN)"
+        );
+        assert_eq!(menu[1].header_before, Some("Alternatives:"));
+        assert_eq!(menu[2].label, "Use an API key (ANTHROPIC_API_KEY)");
+        assert_eq!(menu[2].header_before, None);
+        assert_eq!(menu[3].label, "Skip for now");
+        assert_eq!(menu[3].header_before, None);
+    }
+
+    #[test]
+    fn test_render_menu_matches_expected_layout() {
+        let menu = build_auth_menu();
+        let mut buf = Vec::new();
+        render_menu(&menu, &mut buf).unwrap();
+        let rendered = String::from_utf8(buf).unwrap();
+
+        let expected = "\n          Recommended:\n            1) Log in once inside the container (Pro/Max subscription)\n\n          Alternatives:\n            2) Use a long-lived OAuth token (CLAUDE_CODE_OAUTH_TOKEN)\n            3) Use an API key (ANTHROPIC_API_KEY)\n            4) Skip for now\n";
+        assert_eq!(rendered, expected);
+    }
+
+    #[test]
+    fn test_auth_explanation_mentions_pro_max_and_in_container_login() {
+        // Guards against accidentally dropping the Pro/Max qualifier
+        // (which would re-mislead Console-only users) and the persistence hint.
+        assert!(AUTH_EXPLANATION.contains("Pro/Max"));
+        assert!(AUTH_EXPLANATION.contains("one-time login"));
+        assert!(AUTH_EXPLANATION.contains("~/.claude"));
     }
 }
