@@ -405,30 +405,47 @@ const CODEX_STORE_WARNING: &str =
      within `agentbox codex` (or run `codex login` on the Mac) after\n\
      changing the setting.";
 
-const CLAUDE_FLAGS_HINT: &str =
-    "Missing [cli.claude] in ~/.config/agentbox/config.toml. Add:\n\n    \
-     [cli.claude]\n    flags = [\"--dangerously-skip-permissions\"]\n\n\
-     Without it, claude prompts for permission on every tool use.";
-
-const CODEX_FLAGS_HINT: &str =
-    "Missing [cli.codex] in ~/.config/agentbox/config.toml. Add:\n\n    \
-     [cli.codex]\n    flags = [\"--dangerously-bypass-approvals-and-sandbox\"]\n\n\
-     Without it, codex tries to sandbox (bubblewrap) and prompts for approvals.";
+/// Build the "missing [cli.X]" hint for an agent. Both the default flag and
+/// the rationale are agent-specific; `CodingAgent::config_key` supplies the
+/// section name.
+fn flags_hint(agent: crate::agent::CodingAgent) -> String {
+    use crate::agent::CodingAgent;
+    let (flag, rationale) = match agent {
+        CodingAgent::Claude => (
+            "--dangerously-skip-permissions",
+            "claude prompts for permission on every tool use.",
+        ),
+        CodingAgent::Codex => (
+            "--dangerously-bypass-approvals-and-sandbox",
+            "codex tries to sandbox (bubblewrap) and prompts for approvals.",
+        ),
+    };
+    let key = agent.config_key();
+    format!(
+        "Missing [cli.{key}] in ~/.config/agentbox/config.toml. Add:\n\n    \
+         [cli.{key}]\n    flags = [\"{flag}\"]\n\n\
+         Without it, {rationale}"
+    )
+}
 
 /// Pure decision for the CLI-flags check. Inspects which `[cli.*]` sections
 /// are present on `config`. Presence-only: a section with `flags = []` is
 /// treated as an intentional user choice and does not produce a warning.
 fn check_agent_flags_with_config(config: &Config) -> Status {
-    let claude_missing = !config.cli.contains_key("claude");
-    let codex_missing = !config.cli.contains_key("codex");
-
-    match (claude_missing, codex_missing) {
-        (false, false) => Status::Ok,
-        (true, false) => Status::OkWithInfo(CLAUDE_FLAGS_HINT.to_string()),
-        (false, true) => Status::OkWithInfo(CODEX_FLAGS_HINT.to_string()),
-        (true, true) => {
-            Status::OkWithInfo(format!("{}\n\n{}", CLAUDE_FLAGS_HINT, CODEX_FLAGS_HINT))
-        }
+    use crate::agent::CodingAgent;
+    let missing: Vec<CodingAgent> = [CodingAgent::Claude, CodingAgent::Codex]
+        .into_iter()
+        .filter(|a| !config.cli.contains_key(a.config_key()))
+        .collect();
+    if missing.is_empty() {
+        Status::Ok
+    } else {
+        let info = missing
+            .iter()
+            .map(|a| flags_hint(*a))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        Status::OkWithInfo(info)
     }
 }
 
@@ -961,23 +978,18 @@ mod tests {
     }
 
     fn config_with_cli_sections(claude: bool, codex: bool) -> Config {
-        let mut cli: HashMap<String, crate::config::CliConfig> = HashMap::new();
+        use crate::config::CliConfig;
+        let mut cli: HashMap<String, CliConfig> = HashMap::new();
         if claude {
             cli.insert(
                 "claude".into(),
-                toml::from_str::<crate::config::CliConfig>(
-                    "flags = [\"--dangerously-skip-permissions\"]",
-                )
-                .unwrap(),
+                CliConfig { flags: vec!["--dangerously-skip-permissions".into()] },
             );
         }
         if codex {
             cli.insert(
                 "codex".into(),
-                toml::from_str::<crate::config::CliConfig>(
-                    "flags = [\"--dangerously-bypass-approvals-and-sandbox\"]",
-                )
-                .unwrap(),
+                CliConfig { flags: vec!["--dangerously-bypass-approvals-and-sandbox".into()] },
             );
         }
         Config { cli, ..Config::default() }
@@ -1033,15 +1045,10 @@ mod tests {
     #[test]
     fn test_check_agent_flags_ok_when_sections_present_but_flags_empty() {
         // Section present with `flags = []` is an intentional user choice.
-        let mut cli: HashMap<String, crate::config::CliConfig> = HashMap::new();
-        cli.insert(
-            "claude".into(),
-            toml::from_str::<crate::config::CliConfig>("flags = []").unwrap(),
-        );
-        cli.insert(
-            "codex".into(),
-            toml::from_str::<crate::config::CliConfig>("flags = []").unwrap(),
-        );
+        use crate::config::CliConfig;
+        let mut cli: HashMap<String, CliConfig> = HashMap::new();
+        cli.insert("claude".into(), CliConfig { flags: vec![] });
+        cli.insert("codex".into(), CliConfig { flags: vec![] });
         let c = Config { cli, ..Config::default() };
         assert!(matches!(check_agent_flags_with_config(&c), Status::Ok));
     }
