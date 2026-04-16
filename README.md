@@ -1,8 +1,12 @@
 # agentbox
 
-Run AI coding agents in isolated Apple Containers. Your project directory is mounted read/write — everything else on your filesystem is inaccessible.
+Run AI coding agents in isolated [Apple Containers](https://github.com/apple/container). Your project directory is mounted read/write — everything else on your filesystem is inaccessible.
 
 Supported agents: Claude Code, OpenAI Codex.
+
+## How It Works
+
+agentbox uses Apple Containers to run a lightweight Linux VM with Claude Code. Containers are persistent (reused across sessions) and auto-named by project directory. Images auto-rebuild when the Dockerfile changes.
 
 ## Requirements
 
@@ -21,100 +25,77 @@ Or with the install script:
 curl -fsSL https://raw.githubusercontent.com/Rag0n/agentbox/main/install.sh | bash
 ```
 
-Or manually:
-
-```bash
-curl -fsSL https://github.com/Rag0n/agentbox/releases/latest/download/agentbox-darwin-arm64.tar.gz | tar xz
-mv agentbox ~/.local/bin/
-```
-
-### Breaking change (pre-1.0)
-
-agentbox no longer hardcodes `--dangerously-skip-permissions` into the claude invocation. The flag now lives in `[cli.claude] flags` in the config template.
-
-- If your `~/.config/agentbox/config.toml` has a `[cli.claude] flags = [...]` entry, add `--dangerously-skip-permissions` to the list.
-- If your config has no `[cli.claude]` section, add one with `flags = ["--dangerously-skip-permissions"]`.
-- If you have no `~/.config/agentbox/config.toml`, run `agentbox setup` — it will create the file with correct defaults.
-
 ## Quick Start
 
 ```bash
 # First time? Run setup to check prerequisites and configure authentication
 agentbox setup
 
-# Then use agentbox normally:
-
-# Start interactive Claude session (default, unless default_agent is set in config)
+# Start interactive Claude session
 agentbox
 
-# Explicit agent subcommands
-agentbox claude
-agentbox codex
-
-# Headless tasks
+# Headless task
 agentbox "fix the failing tests"
+
+# Use a different agent
+agentbox codex
 agentbox codex "fix the failing tests"
-
-# Open an interactive bash shell in the container (no Claude)
-agentbox shell
-
-# Run a one-shot command in the container
-agentbox shell -- npm test
-
-# Show container status (CPU, memory, project, sessions)
-# On a TTY it refreshes every 2s like top — exit with q or Ctrl+C.
-# Use --no-stream for a single snapshot (or pipe to skip live mode).
-agentbox status
-
-# Remove current project's container
-agentbox rm
-
-# Remove specific containers
-agentbox rm agentbox-myapp-abc123 agentbox-other-def456
-
-# Remove all agentbox containers
-agentbox rm --all
-
-# Force rebuild the image
-agentbox build
 ```
 
-## Passing Flags to the Coding Agent
+## Authentication
 
-Use `--` to pass flags through to the underlying CLI (e.g., Claude Code):
+macOS Keychain isn't reachable from inside the Linux container. Run `agentbox setup` to configure authentication — it will guide you through the options.
 
-```bash
-# Pass a model flag
-agentbox -- --model sonnet
+**Simplest method (Pro/Max subscription):** run `agentbox`, type `/login` inside Claude, and complete the browser flow. The login persists across all sessions via the `~/.claude` mount.
 
-# Append to system prompt for a headless task
-agentbox "fix the tests" -- --append-system-prompt "Be concise."
+<details>
+<summary>Other authentication methods</summary>
 
-# Pass a codex config override (reasoning effort)
-agentbox codex -- -c model_reasoning_effort=high
-```
+**OAuth token (`CLAUDE_CODE_OAUTH_TOKEN`).** Best for headless machines, CI, or automated provisioning.
 
-For flags you want every time, set them in config instead of repeating on every invocation:
+1. Generate a token on the host:
 
-```toml
-# ~/.config/agentbox/config.toml
-[cli.claude]
-flags = ["--append-system-prompt", "Be brutally honest."]
-```
+   ```bash
+   claude setup-token
+   ```
 
-For codex, use a `[cli.codex]` section the same way:
+2. Add it to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.):
 
-```toml
-# Pass flags to codex via config
-# [cli.codex]
-# flags = ["--dangerously-bypass-approvals-and-sandbox", "-c", "model_reasoning_effort=medium"]
-```
+   ```bash
+   export CLAUDE_CODE_OAUTH_TOKEN="your-token-here"
+   ```
 
-Config flags and `--` flags are merged. Config flags come first, `--` flags after.
+3. Tell agentbox to pass it into the container:
+
+   ```toml
+   # ~/.config/agentbox/config.toml
+   [env]
+   CLAUDE_CODE_OAUTH_TOKEN = ""  # empty = inherit from host env
+   ```
+
+**API key (`ANTHROPIC_API_KEY`).** For Console (pay-as-you-go) billing.
+
+1. Export the key in your shell profile:
+
+   ```bash
+   export ANTHROPIC_API_KEY="sk-..."
+   ```
+
+2. Tell agentbox to pass it into the container:
+
+   ```toml
+   # ~/.config/agentbox/config.toml
+   [env]
+   ANTHROPIC_API_KEY = ""  # empty = inherit from host env
+   ```
+
+**OpenAI Codex.** Run `agentbox codex`. On an unauthenticated container, pick the device-code sign-in flow, then open the URL on your Mac and enter the code shown in the terminal. Auth persists via the `~/.codex` mount. `agentbox setup` detects and warns about credential store issues (e.g. keyring mode that can't work inside Linux).
+
+</details>
 
 ## Configuration
 
-Optional. Create with `agentbox config init`.
+Created automatically by `agentbox setup`. You can also create or reset it with `agentbox config init`.
 
 Located at `~/.config/agentbox/config.toml`:
 
@@ -144,7 +125,7 @@ CLAUDE_CODE_OAUTH_TOKEN = ""
 GH_TOKEN = ""
 MY_API_KEY = "abc123"
 
-# Default flags for each agent. Replace to override.
+# Default flags for each agent
 [cli.claude]
 flags = ["--dangerously-skip-permissions"]
 
@@ -156,21 +137,33 @@ flags = ["--dangerously-bypass-approvals-and-sandbox"]
 dockerfile = "/path/to/mystack.Dockerfile"
 ```
 
-### Terminal notifications
+### Passing flags to the coding agent
 
-After a long image rebuild, agentbox sends a terminal notification so you can tab away without missing when it's done. Notifications fire only when a rebuild actually runs (not on cached session starts, not for the coding agent's own prompts — those are covered by agent-specific plugins like `agent-notifications`).
+Use `--` to pass flags through to the underlying CLI:
 
-Supported terminals (native, no extra install): Ghostty, WezTerm, iTerm2, Kitty. Other terminals silently skip — no visible garbage.
-
-On by default. Disable:
-
-```toml
-# ~/.config/agentbox/config.toml
-[notifications]
-enabled = false
+```bash
+agentbox -- --model sonnet
+agentbox "fix the tests" -- --append-system-prompt "Be concise."
+agentbox codex -- -c model_reasoning_effort=high
 ```
 
-Success fires with title `agentbox: build complete`; failure with `agentbox: build failed`. Body is the project directory name.
+For flags you want every time, use `[cli.claude]` or `[cli.codex]` in config (see above). Config flags and `--` flags are merged — config first, `--` after.
+
+### Volumes
+
+Additional volumes can be mounted via config (`volumes = [...]`) or per-invocation:
+
+```bash
+agentbox --mount ~/.config/worktrunk --mount /path/to/other/dir
+```
+
+Three path formats are supported:
+
+| Format | Example | Behavior |
+|--------|---------|----------|
+| Tilde prefix | `~/.config/foo` | Host `~/` → container `/home/user/` |
+| Absolute path | `/some/path` | Same path in container |
+| Explicit mapping | `/source:/dest` | Custom source → dest |
 
 ## Custom Dockerfiles
 
@@ -193,6 +186,87 @@ RUN sudo apt-get update && sudo apt-get install -y nodejs
 > the cold-start case won't launch a shell — run `agentbox` first to create
 > the container, then `agentbox shell` works via the exec path.
 
+### Global
+
+Set `dockerfile` in config to use a custom Dockerfile for all projects:
+
+```toml
+# ~/.config/agentbox/config.toml
+dockerfile = "~/.config/agentbox/Dockerfile.custom"
+```
+
+<details>
+<summary>Example: multi-language development environment</summary>
+
+```dockerfile
+FROM agentbox:default
+
+# Build dependencies for Ruby/Python compilation via asdf
+RUN sudo apt-get update \
+    && sudo apt-get install -y --no-install-recommends \
+        build-essential pkg-config autoconf patch rustc xz-utils \
+        libssl-dev zlib1g-dev libyaml-dev libffi-dev libgmp-dev \
+        libreadline-dev libbz2-dev libsqlite3-dev libncurses-dev liblzma-dev libgdbm-dev \
+    && sudo rm -rf /var/lib/apt/lists/*
+
+# Install worktrunk (git worktree manager for AI agent workflows)
+RUN ARCH=$(uname -m) \
+    && sudo mkdir -p /tmp/worktrunk \
+    && sudo curl -fL "https://github.com/max-sixty/worktrunk/releases/download/v0.27.0/worktrunk-${ARCH}-unknown-linux-musl.tar.xz" \
+        | sudo tar -xJ --strip-components=1 -C /tmp/worktrunk/ \
+    && sudo cp /tmp/worktrunk/wt /tmp/worktrunk/git-wt /usr/local/bin/ \
+    && sudo chmod +x /usr/local/bin/wt /usr/local/bin/git-wt \
+    && sudo rm -rf /tmp/worktrunk
+
+# wt shell integration: make `wt switch` auto-cd in non-interactive bash
+RUN wt config shell init bash | sudo tee /etc/wt-init.sh > /dev/null
+ENV BASH_ENV=/etc/wt-init.sh
+
+# Install asdf version manager (pre-built binary)
+RUN mkdir -p ~/.local/bin \
+    && ARCH=$(dpkg --print-architecture) \
+    && curl -fsSL "https://github.com/asdf-vm/asdf/releases/download/v0.18.1/asdf-v0.18.1-linux-${ARCH}.tar.gz" \
+        | tar xz -C ~/.local/bin/
+ENV PATH="/home/user/.local/bin:/home/user/.asdf/shims:${PATH}"
+
+# Install Node.js via asdf
+RUN asdf plugin add nodejs \
+    && asdf install nodejs 23.6.0 \
+    && asdf set --home nodejs 23.6.0
+
+# Install Ruby via asdf
+RUN asdf plugin add ruby \
+    && asdf install ruby 3.2.2 \
+    && asdf set --home ruby 3.2.2
+
+# Install Python via asdf
+RUN asdf plugin add python \
+    && asdf install python 3.13.9 \
+    && asdf set --home python 3.13.9
+
+# TypeScript LSP dependencies
+RUN npm install -g typescript-language-server typescript yarn
+
+# Defuddle (web content extractor CLI)
+RUN npm install -g defuddle
+
+# Ruby bundler
+RUN gem install bundler -v 2.4.12
+
+# Rust toolchain + rust-analyzer LSP
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/home/user/.cargo/bin:${PATH}"
+RUN rustup component add rust-analyzer
+
+# Git credential helper for GitHub
+RUN git config --global credential.helper '!/usr/bin/env gh auth git-credential' \
+    && git config --global url."https://github.com/".insteadOf "git@github.com:"
+
+RUN echo 'export PATH="$HOME/.cargo/bin:$HOME/.asdf/shims:$HOME/.local/bin:$PATH"' >> ~/.profile
+```
+
+</details>
+
 ### Profiles
 
 Define in config, use with `--profile`:
@@ -200,83 +274,6 @@ Define in config, use with `--profile`:
 ```bash
 agentbox --profile mystack
 ```
-
-## Authentication
-
-### Claude Code
-
-macOS Keychain isn't reachable from inside the Linux container. Claude Code needs either a one-time login from inside the container or credentials passed via environment variable.
-
-**Easiest approach: Run `agentbox setup`** — it will guide you through the options.
-
-Three methods, in order of recommendation:
-
-**Option A (recommended, Pro/Max subscription): Log in once inside the container.**
-
-Run `agentbox`, type `/login` inside Claude, and complete the browser flow. Claude Code writes `~/.claude/.credentials.json`. Because agentbox mounts `~/.claude` into the container, the login persists across all future sessions — you only do this once.
-
-Nothing to configure ahead of time. This is the simplest path for Pro/Max subscribers.
-
-**Option B (Pro/Max subscription): Long-lived OAuth token (`CLAUDE_CODE_OAUTH_TOKEN`).**
-
-Best when an interactive login isn't practical — headless machines, CI, or automated provisioning.
-
-1. Generate a token on the host:
-
-   ```bash
-   claude setup-token
-   ```
-
-2. Add it to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.):
-
-   ```bash
-   export CLAUDE_CODE_OAUTH_TOKEN="your-token-here"
-   ```
-
-3. Tell agentbox to pass it into the container:
-
-   ```toml
-   # ~/.config/agentbox/config.toml
-   [env]
-   CLAUDE_CODE_OAUTH_TOKEN = ""  # empty = inherit from host env
-   ```
-
-**Option C (Console API billing): API key (`ANTHROPIC_API_KEY`).**
-
-Use this if you bill via the Anthropic Console (pay-as-you-go) rather than a Claude subscription.
-
-1. Export the key in your shell profile (`~/.zshrc`, `~/.bashrc`, etc.):
-
-   ```bash
-   export ANTHROPIC_API_KEY="sk-..."
-   ```
-
-2. Tell agentbox to pass it into the container:
-
-   ```toml
-   # ~/.config/agentbox/config.toml
-   [env]
-   ANTHROPIC_API_KEY = ""  # empty = inherit from host env
-   ```
-
-Regardless of which option you pick, `~/.claude` is mounted into the container, so project settings, CLAUDE.md trust, and preferences carry over automatically.
-
-### OpenAI Codex
-
-Codex stores auth under `~/.codex/auth.json`, which agentbox mounts into the container read/write. Sign in once (host or container); the credentials persist for both.
-
-**First sign-in.** Run `agentbox codex`. On an unauthenticated container, codex's onboarding menu appears; pick the device-code sign-in flow (intended for remote/headless machines), then open the URL on your Mac and enter the code shown in the terminal. Auth persists automatically via the `~/.codex` mount. If the onboarding menu only shows ChatGPT / API-key options up front, pick ChatGPT and press Esc on the browser screen — codex falls back to device code for headless environments.
-
-**Credential storage — default case.** Codex stores credentials in `~/.codex/auth.json` by default (file-based). You don't need to configure anything; the mount makes the file reachable from both host and container.
-
-**Credential storage — if you've customized it.** If you previously set `cli_auth_credentials_store = "keyring"` (or `"auto"`, `"ephemeral"`) in `~/.codex/config.toml`, auth won't propagate into the container — the Linux container can't reach the macOS Keychain. Switch the setting back to `"file"` and re-login:
-
-```toml
-# ~/.codex/config.toml
-cli_auth_credentials_store = "file"
-```
-
-`agentbox setup` detects this case and prints the same hint.
 
 ## What's Mounted
 
@@ -288,22 +285,8 @@ cli_auth_credentials_store = "file"
 | `~/.codex`          | `/home/user/.codex`       | read/write |                                                               |
 | Additional volumes  | Configured path           | read/write |                                                               |
 
-Additional volumes can be mounted via [config](#configuration) or CLI:
-
-```bash
-# Mount extra directories per-invocation (see config for persistent mounts)
-agentbox --mount ~/.config/worktrunk --mount /path/to/other/dir
-```
-
-Three path formats are supported:
-
-| Format | Example | Behavior |
-|--------|---------|----------|
-| Tilde prefix | `~/.config/foo` | Host `~/` → container `/home/user/` |
-| Absolute path | `/some/path` | Same path in container |
-| Explicit mapping | `/source:/dest` | Custom source → dest |
-
-## Sharing Screenshots
+<details>
+<summary>Sharing screenshots with the container</summary>
 
 macOS clipboard lives in memory and isn't directly accessible from inside the container. However, screenshot tools save files to disk, and you can mount those directories so Claude can see pasted/dragged images.
 
@@ -325,17 +308,37 @@ After adding these volumes, restart your container (`agentbox rm && agentbox`) a
 
 > **Note:** The standard macOS screenshot tool (`Cmd+Shift+3/4`) saves to Desktop by default. If your Desktop isn't already mounted, add `/Users/YOUR_USERNAME/Desktop` to your volumes. Clipboard-only copies (`Cmd+Shift+Ctrl+3/4`) create no file on disk — use `Cmd+Shift+3/4` (without Ctrl) instead.
 
-## What's Isolated
+</details>
 
-Claude **cannot** access `~/.ssh`, `~/.aws`, `~/.gnupg`, or any other host directory.
+## Container Management
+
+```bash
+# Open a bash shell in the container (no agent)
+agentbox shell
+
+# Run a one-shot command
+agentbox shell -- npm test
+
+# Show container status (CPU, memory, sessions)
+# Refreshes every 2s on a TTY — exit with q or Ctrl+C
+agentbox status
+
+# Remove current project's container
+agentbox rm
+
+# Remove all agentbox containers
+agentbox rm --all
+
+# Force rebuild the image
+agentbox build
+```
 
 ## Host Command Execution (Experimental)
 
 Run macOS host commands from inside the container. Useful for tools that can't run in Linux, like `xcodebuild` or `xcrun`.
 
-Configure in `~/.config/agentbox/config.toml`:
-
 ```toml
+# ~/.config/agentbox/config.toml
 [bridge]
 allowed_commands = ["xcodebuild", "xcrun", "adb"]
 ```
@@ -343,7 +346,3 @@ allowed_commands = ["xcodebuild", "xcrun", "adb"]
 Only commands in `allowed_commands` can be executed. The bridge starts automatically when commands are configured and stops when the session ends.
 
 Set `forward_not_found = true` to automatically forward any command not found in the container to the host.
-
-## How It Works
-
-agentbox uses Apple Containers to run a lightweight Linux VM with Claude Code. Containers are persistent (reused across sessions) and auto-named by project directory. Images auto-rebuild when the Dockerfile changes.
