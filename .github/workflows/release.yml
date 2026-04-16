@@ -34,3 +34,20 @@ jobs:
         with:
           files: agentbox-darwin-arm64.tar.gz
           generate_release_notes: true
+
+  bump-homebrew:
+    needs: build
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.ref_name, '-') }}
+    steps:
+      - name: Bump Homebrew formula
+        uses: mislav/bump-homebrew-formula-action@v3
+        with:
+          formula-name: agentbox
+          formula-path: Formula/agentbox.rb
+          homebrew-tap: Rag0n/homebrew-tap
+          download-url: https://github.com/Rag0n/agentbox/releases/download/${{ github.ref_name }}/agentbox-darwin-arm64.tar.gz
+          commit-message: |
+            agentbox ${{ github.ref_name }}
+        env:
+          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

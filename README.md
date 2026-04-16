@@ -12,6 +12,12 @@ Currently supports Claude Code. More agents planned.
 ## Install
 
 ```bash
+brew install rag0n/tap/agentbox
+```
+
+Or with the install script:
+
+```bash
 curl -fsSL https://raw.githubusercontent.com/Rag0n/agentbox/main/install.sh | bash
 ```
 
