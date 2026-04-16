@@ -93,12 +93,15 @@ pub fn cache_dir() -> PathBuf {
         .join("agentbox")
 }
 
-/// Build the cache-hash input for a dockerfile. If the Dockerfile bundles the
-/// agentbox entrypoint script (detected by literal `entrypoint.sh` reference),
-/// fold the script's bytes into the input so any future entrypoint change
-/// auto-invalidates the cache.
+/// Build the cache-hash input for a dockerfile. Fold entrypoint.sh into the
+/// hash whenever the image depends on it: either because the Dockerfile copies
+/// it directly (`entrypoint.sh` literal) or because it inherits the ENTRYPOINT
+/// via `FROM agentbox:default`. Without the second case, a custom Dockerfile
+/// that extends our base would keep a stale image after our entrypoint changes.
 fn cache_input(dockerfile_content: &str) -> String {
-    if dockerfile_content.contains("entrypoint.sh") {
+    let depends_on_entrypoint = dockerfile_content.contains("entrypoint.sh")
+        || references_default_base(dockerfile_content);
+    if depends_on_entrypoint {
         format!("{}\n--ENTRYPOINT--\n{}", dockerfile_content, ENTRYPOINT_SCRIPT)
     } else {
         dockerfile_content.to_string()
@@ -534,6 +537,17 @@ mod tests {
         let dockerfile = "FROM debian:bookworm-slim\nCMD [\"sleep\", \"infinity\"]";
         let result = cache_input(dockerfile);
         assert_eq!(result, dockerfile);
+    }
+
+    #[test]
+    fn test_cache_input_includes_entrypoint_when_dockerfile_extends_agentbox_default() {
+        // A custom Dockerfile that extends our base inherits the ENTRYPOINT
+        // from agentbox:default. When our entrypoint.sh changes, the custom
+        // image is stale even if the custom Dockerfile's own text is unchanged.
+        let dockerfile = "FROM agentbox:default\nRUN apt-get install -y cowsay";
+        let result = cache_input(dockerfile);
+        assert!(result.contains(ENTRYPOINT_SCRIPT));
+        assert!(result.len() > dockerfile.len());
     }
 
     #[test]
