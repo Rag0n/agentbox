@@ -405,6 +405,40 @@ const CODEX_STORE_WARNING: &str =
      within `agentbox codex` (or run `codex login` on the Mac) after\n\
      changing the setting.";
 
+const CLAUDE_FLAGS_HINT: &str =
+    "Missing [cli.claude] in ~/.config/agentbox/config.toml. Add:\n\n    \
+     [cli.claude]\n    flags = [\"--dangerously-skip-permissions\"]\n\n\
+     Without it, claude prompts for permission on every tool use.";
+
+const CODEX_FLAGS_HINT: &str =
+    "Missing [cli.codex] in ~/.config/agentbox/config.toml. Add:\n\n    \
+     [cli.codex]\n    flags = [\"--dangerously-bypass-approvals-and-sandbox\"]\n\n\
+     Without it, codex tries to sandbox (bubblewrap) and prompts for approvals.";
+
+/// Pure decision for the CLI-flags check. Inspects which `[cli.*]` sections
+/// are present on `config`. Presence-only: a section with `flags = []` is
+/// treated as an intentional user choice and does not produce a warning.
+fn check_agent_flags_with_config(config: &Config) -> Status {
+    let claude_missing = !config.cli.contains_key("claude");
+    let codex_missing = !config.cli.contains_key("codex");
+
+    match (claude_missing, codex_missing) {
+        (false, false) => Status::Ok,
+        (true, false) => Status::OkWithInfo(CLAUDE_FLAGS_HINT.to_string()),
+        (false, true) => Status::OkWithInfo(CODEX_FLAGS_HINT.to_string()),
+        (true, true) => {
+            Status::OkWithInfo(format!("{}\n\n{}", CLAUDE_FLAGS_HINT, CODEX_FLAGS_HINT))
+        }
+    }
+}
+
+fn check_agent_flags() -> Status {
+    match Config::load() {
+        Ok(c) => check_agent_flags_with_config(&c),
+        Err(e) => Status::Errored(e),
+    }
+}
+
 /// Testable core: takes an explicit path (or `None` to skip the store check).
 /// The production wrapper reads from `~/.codex/config.toml`.
 fn check_codex_authentication_with_path(codex_config: Option<&Path>) -> Status {
@@ -489,8 +523,9 @@ pub fn run_setup() -> Result<()> {
         ("Container system running", check_container_system),
         ("Config file", check_config_file),
         ("Default agent", check_default_agent),
+        ("Agent flags", check_agent_flags),
         ("Claude authentication", check_authentication),
-        ("Codex authentication", check_codex_authentication),  // NEW
+        ("Codex authentication", check_codex_authentication),
     ];
 
     let mut passed = 0;
@@ -923,5 +958,91 @@ mod tests {
             }
             _ => panic!("expected Status::OkWithInfo"),
         }
+    }
+
+    fn config_with_cli_sections(claude: bool, codex: bool) -> Config {
+        let mut cli: HashMap<String, crate::config::CliConfig> = HashMap::new();
+        if claude {
+            cli.insert(
+                "claude".into(),
+                toml::from_str::<crate::config::CliConfig>(
+                    "flags = [\"--dangerously-skip-permissions\"]",
+                )
+                .unwrap(),
+            );
+        }
+        if codex {
+            cli.insert(
+                "codex".into(),
+                toml::from_str::<crate::config::CliConfig>(
+                    "flags = [\"--dangerously-bypass-approvals-and-sandbox\"]",
+                )
+                .unwrap(),
+            );
+        }
+        Config { cli, ..Config::default() }
+    }
+
+    #[test]
+    fn test_check_agent_flags_ok_when_both_sections_present() {
+        let c = config_with_cli_sections(true, true);
+        assert!(matches!(check_agent_flags_with_config(&c), Status::Ok));
+    }
+
+    #[test]
+    fn test_check_agent_flags_info_when_codex_missing() {
+        // Typical upgrade path: user's pre-codex config has [cli.claude] only.
+        let c = config_with_cli_sections(true, false);
+        match check_agent_flags_with_config(&c) {
+            Status::OkWithInfo(info) => {
+                assert!(info.contains("[cli.codex]"));
+                assert!(info.contains("--dangerously-bypass-approvals-and-sandbox"));
+                assert!(!info.contains("[cli.claude]"));
+            }
+            _ => panic!("expected OkWithInfo"),
+        }
+    }
+
+    #[test]
+    fn test_check_agent_flags_info_when_claude_missing() {
+        let c = config_with_cli_sections(false, true);
+        match check_agent_flags_with_config(&c) {
+            Status::OkWithInfo(info) => {
+                assert!(info.contains("[cli.claude]"));
+                assert!(info.contains("--dangerously-skip-permissions"));
+                assert!(!info.contains("[cli.codex]"));
+            }
+            _ => panic!("expected OkWithInfo"),
+        }
+    }
+
+    #[test]
+    fn test_check_agent_flags_info_when_both_missing() {
+        // Fresh Config::default() has no cli sections — matches what a user
+        // hand-rolling a minimal config would look like.
+        let c = Config::default();
+        match check_agent_flags_with_config(&c) {
+            Status::OkWithInfo(info) => {
+                assert!(info.contains("[cli.claude]"));
+                assert!(info.contains("[cli.codex]"));
+            }
+            _ => panic!("expected OkWithInfo"),
+        }
+    }
+
+    #[test]
+    fn test_check_agent_flags_ok_when_sections_present_but_flags_empty() {
+        // Section present with `flags = []` is an intentional user choice.
+        let mut cli: HashMap<String, crate::config::CliConfig> = HashMap::new();
+        cli.insert(
+            "claude".into(),
+            toml::from_str::<crate::config::CliConfig>("flags = []").unwrap(),
+        );
+        cli.insert(
+            "codex".into(),
+            toml::from_str::<crate::config::CliConfig>("flags = []").unwrap(),
+        );
+        let c = Config { cli, ..Config::default() };
+        assert!(matches!(check_agent_flags_with_config(&c), Status::Ok));
     }
 }
