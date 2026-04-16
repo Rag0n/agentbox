@@ -18,6 +18,12 @@ const ANTHROPIC_API_KEY: &str = "ANTHROPIC_API_KEY";
 const CLAUDE_CODE_OAUTH_TOKEN: &str = "CLAUDE_CODE_OAUTH_TOKEN";
 const AUTH_KEYS: &[&str] = &[ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN];
 
+// Section headers rendered above menu options in `build_auth_menu`. Kept as
+// module-level constants so the production strings have one source of truth;
+// tests continue to assert on the literal values to catch drift.
+const HEADER_RECOMMENDED: &str = "Recommended:";
+const HEADER_ALTERNATIVES: &str = "Alternatives:";
+
 pub enum Status {
     Ok,
     /// Non-blocking pass with an advisory note printed under the step label.
@@ -297,7 +303,7 @@ fn build_auth_menu() -> Vec<MenuOption> {
                 println!("        The credentials persist under ~/.claude — you only do this once.");
                 Ok(())
             }),
-            header_before: Some("Recommended:"),
+            header_before: Some(HEADER_RECOMMENDED),
         },
         MenuOption {
             label: "Use a long-lived OAuth token (CLAUDE_CODE_OAUTH_TOKEN)",
@@ -308,7 +314,7 @@ fn build_auth_menu() -> Vec<MenuOption> {
                 println!("\n            export {}=\"your-token-here\"", CLAUDE_CODE_OAUTH_TOKEN);
                 prompt_and_add_env_var(CLAUDE_CODE_OAUTH_TOKEN)
             }),
-            header_before: Some("Alternatives:"),
+            header_before: Some(HEADER_ALTERNATIVES),
         },
         MenuOption {
             label: "Use an API key (ANTHROPIC_API_KEY)",
