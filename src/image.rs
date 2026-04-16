@@ -74,12 +74,14 @@ pub fn resolve_dockerfile(
         }
     }
 
-    // 3. Global default override
+    // 3. Global default override — distinct tag so a custom Dockerfile that
+    // does `FROM agentbox:default` doesn't overwrite the base tag after its
+    // own build finishes.
     if let Some(ref df) = config.dockerfile {
         let df_path = expand_tilde(df)?;
         let content = std::fs::read_to_string(&df_path)
             .with_context(|| format!("failed to read {}", df_path.display()))?;
-        return Ok((content, "agentbox:default".into()));
+        return Ok((content, "agentbox:custom".into()));
     }
 
     // 4. Built-in default
@@ -391,6 +393,27 @@ mod tests {
 
         assert!(content.contains("debian:bookworm-slim"));
         assert_eq!(tag, "agentbox:default");
+    }
+
+    #[test]
+    fn test_resolve_dockerfile_global_override_uses_custom_tag() {
+        // A user-supplied `config.dockerfile` must NOT reuse the
+        // `agentbox:default` tag, or a `FROM agentbox:default` inside the
+        // custom will be clobbered when the build tags its own output.
+        let tmp = tempfile::tempdir().unwrap();
+        let custom_path = tmp.path().join("Dockerfile.custom");
+        std::fs::write(&custom_path, "FROM agentbox:default\nRUN echo custom").unwrap();
+
+        let config = Config {
+            dockerfile: Some(custom_path),
+            ..Config::default()
+        };
+        let project_dir = tmp.path();
+
+        let (content, tag) = resolve_dockerfile(project_dir, None, &config).unwrap();
+
+        assert!(content.contains("FROM agentbox:default"));
+        assert_eq!(tag, "agentbox:custom");
     }
 
     #[test]
